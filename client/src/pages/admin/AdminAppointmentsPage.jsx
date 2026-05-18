@@ -80,6 +80,14 @@ const normalizeAppointmentsResponse = (payload) => {
 const getAppointmentFetchMessage = (error) =>
   error?.response?.data?.message || error?.message || "Không thể tải danh sách lịch hẹn";
 
+const formatCancelReason = (reason) => {
+  if (!reason) return "";
+  if (String(reason).trim().toLowerCase() === "auto-expired") {
+    return "Hệ thống tự động huỷ do lịch hẹn đã quá hạn";
+  }
+  return reason;
+};
+
 export default function AdminAppointmentsPage() {
   const refreshKey = useRealtimeRefresh(["appointment:changed"]);
   const [allAppointments, setAllAppointments] = useState([]);
@@ -670,7 +678,7 @@ export default function AdminAppointmentsPage() {
                 <div>
                   <p className="text-sm text-muted-foreground">Lý do hủy</p>
                   <p className="font-medium text-red-600">
-                    {selectedAppointment.cancelReason}
+                    {formatCancelReason(selectedAppointment.cancelReason)}
                   </p>
                 </div>
               )}

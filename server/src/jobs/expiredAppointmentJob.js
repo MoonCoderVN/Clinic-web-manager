@@ -1,5 +1,7 @@
 import cron from "node-cron";
 import Appointment from "../modules/appointment/appointment.model.js";
+import User from "../modules/user/user.model.js";
+import { createNotification } from "../modules/notification/notification.service.js";
 import { emitPublic } from "../realtime/socket.js";
 
 const EXPIRABLE_STATUSES = ["pending", "confirmed", "rescheduled"];
@@ -57,6 +59,60 @@ const getAppointmentDateTime = (appointment) => {
     return dateTime;
 };
 
+const formatAppointmentLabel = (appointment) => {
+    const dateValue = appointment.appointmentDate || appointment.date;
+    const timeValue = appointment.startTime || appointment.timeSlot;
+    const dateLabel = dateValue ? new Date(dateValue).toLocaleDateString("vi-VN") : "ngày đã đặt";
+    return `${timeValue || "giờ đã đặt"} ngày ${dateLabel}`;
+};
+
+const createExpiryNotifications = async (appointments) => {
+    if (!appointments.length) return;
+
+    const admins = await User.find({ role: "admin" }).select("_id").lean();
+    const tasks = [];
+
+    for (const appointment of appointments) {
+        const appointmentLabel = formatAppointmentLabel(appointment);
+        const serviceName = appointment.serviceId?.name || "dịch vụ nha khoa";
+        const patientName = appointment.patientId?.fullName || "Bệnh nhân";
+        const doctorUserId = appointment.doctorId?.userId?._id || appointment.doctorId?.userId;
+
+        if (appointment.patientId?._id) {
+            tasks.push(createNotification(
+                appointment.patientId._id,
+                "appointment",
+                "Lịch hẹn đã quá hạn",
+                `Lịch hẹn ${serviceName} lúc ${appointmentLabel} đã quá hạn và được hệ thống tự động huỷ. Vui lòng đặt lịch mới nếu bạn vẫn cần khám.`
+            ));
+        }
+
+        if (doctorUserId) {
+            tasks.push(createNotification(
+                doctorUserId,
+                "appointment",
+                "Một lịch hẹn đã quá hạn",
+                `Lịch hẹn của ${patientName} lúc ${appointmentLabel} đã quá hạn và được hệ thống tự động huỷ.`
+            ));
+        }
+
+        for (const admin of admins) {
+            tasks.push(createNotification(
+                admin._id,
+                "appointment",
+                "Có lịch hẹn quá hạn đã được hệ thống huỷ",
+                `Lịch hẹn của ${patientName} lúc ${appointmentLabel} đã quá hạn và được hệ thống tự động huỷ.`
+            ));
+        }
+    }
+
+    const results = await Promise.allSettled(tasks);
+    const failedCount = results.filter((result) => result.status === "rejected").length;
+    if (failedCount > 0) {
+        console.warn(`[ExpiredAppointmentJob] Failed to create ${failedCount} expiry notifications.`);
+    }
+};
+
 export const expireOverdueAppointments = async () => {
     const now = new Date();
     const todayStart = new Date(now);
@@ -68,7 +124,11 @@ export const expireOverdueAppointments = async () => {
             { appointmentDate: { $lt: now } },
             { date: { $lt: now } },
         ],
-    }).select("appointmentDate date startTime timeSlot status");
+    })
+        .select("appointmentDate date startTime timeSlot status patientId doctorId serviceId")
+        .populate("patientId", "fullName")
+        .populate("serviceId", "name")
+        .populate({ path: "doctorId", select: "userId", populate: { path: "userId", select: "_id" } });
 
     const overdue = candidates.filter((appointment) => {
         const dateTime = getAppointmentDateTime(appointment);
@@ -90,12 +150,14 @@ export const expireOverdueAppointments = async () => {
         {
             $set: {
                 status: "cancelled",
-                cancelReason: "Auto-expired",
+                cancelReason: "Hệ thống tự động huỷ do lịch hẹn đã quá hạn",
                 cancelledBy: "system",
                 cancelledAt: now,
             },
         }
     );
+
+    await createExpiryNotifications(overdue);
 
     emitPublic("appointment:changed", {
         action: "expired-bulk",

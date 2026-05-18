@@ -57,6 +57,14 @@ const getEffectiveDate = (appt) => appt.appointmentDate || appt.date;
 const getEffectiveTime = (appt) => appt.startTime || appt.timeSlot;
 const getDoctorName = (appt) => appt.doctorId?.userId?.fullName || appt.doctorId?.name || appt.doctorName || "Đang cập nhật";
 const getServiceName = (appt) => appt.serviceId?.name || appt.serviceName || "Dịch vụ nha khoa";
+const formatCancelReason = (reason) => {
+  if (!reason) return "";
+  if (String(reason).trim().toLowerCase() === "auto-expired") {
+    return "Hệ thống tự động huỷ do lịch hẹn đã quá hạn";
+  }
+  return reason;
+};
+
 const normalizeAppointments = (payload) => {
   if (Array.isArray(payload)) return payload;
   if (Array.isArray(payload?.data)) return payload.data;
@@ -707,7 +715,7 @@ function AppointmentDetailDialog({ open, onOpenChange, appointment }) {
             <InfoSection title="Ghi chú của bạn" content={appointment.notes || appointment.note} />
           )}
           {appointment.diagnosis && <InfoSection title="Chẩn đoán từ bác sĩ" content={appointment.diagnosis} tone="blue" />}
-          {appointment.cancelReason && <InfoSection title="Lý do hủy" content={appointment.cancelReason} tone="red" />}
+          {appointment.cancelReason && <InfoSection title="Lý do hủy" content={formatCancelReason(appointment.cancelReason)} tone="red" />}
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
