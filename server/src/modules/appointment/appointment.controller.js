@@ -10,6 +10,10 @@ import { sendEmail } from "../../utils/sendEmail.js";
 import { appointmentBookedTemplate, appointmentConfirmedTemplate } from "../../utils/emailTemplates.js";
 import { emitAppointmentChanged } from "../../realtime/socket.js";
 
+const CHECK_IN_WINDOW_BEFORE_MS = 30 * 60 * 1000;
+const CHECK_IN_WINDOW_AFTER_MS = 60 * 60 * 1000;
+const CONFIRM_GRACE_MS = 15 * 60 * 1000;
+
 const parseTimeParts = (value) => {
     const match = String(value || "").trim().match(/^(\d{1,2}):(\d{2})$/);
     if (!match) return null;
@@ -560,12 +564,8 @@ export const cancelAppointment = async (req, res, next) => {
 
         // Time check: patient không thể cancel trong vòng 2 giờ (admin/doctor không bị hạn chế)
         if (req.user.role === "patient") {
-            const apptTime = appointment.startTime || appointment.timeSlot;
-            const apptDate = appointment.appointmentDate || appointment.date;
-            if (apptDate && apptTime) {
-                const [h, m] = apptTime.split(":").map(Number);
-                const apptDateTime = new Date(apptDate);
-                apptDateTime.setHours(h, m, 0, 0);
+            const apptDateTime = getAppointmentDateTime(appointment);
+            if (apptDateTime) {
                 const twoHoursFromNow = new Date(Date.now() + 2 * 60 * 60 * 1000);
                 if (apptDateTime < twoHoursFromNow) {
                     return res.status(400).json({
@@ -661,7 +661,7 @@ export const confirmAppointment = async (req, res, next) => {
         }
 
         const appointmentDateTime = getAppointmentDateTime(appointment);
-        if (appointmentDateTime && appointmentDateTime < new Date()) {
+        if (appointmentDateTime && appointmentDateTime.getTime() + CONFIRM_GRACE_MS < Date.now()) {
             return res.status(400).json({
                 success: false,
                 message: "Không thể xác nhận lịch hẹn đã quá hạn",
@@ -736,11 +736,21 @@ export const checkInAppointment = async (req, res, next) => {
         }
 
         const appointmentDateTime = getAppointmentDateTime(appointment);
-        if (appointmentDateTime && appointmentDateTime < new Date()) {
-            return res.status(400).json({
-                success: false,
-                message: "Không thể check-in lịch hẹn đã quá hạn",
-            });
+        if (appointmentDateTime) {
+            const nowMs = Date.now();
+            const appointmentMs = appointmentDateTime.getTime();
+            if (nowMs < appointmentMs - CHECK_IN_WINDOW_BEFORE_MS) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Chưa đến giờ check-in. Chỉ có thể check-in sớm tối đa 30 phút",
+                });
+            }
+            if (nowMs > appointmentMs + CHECK_IN_WINDOW_AFTER_MS) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Lịch hẹn đã quá hạn check-in",
+                });
+            }
         }
 
         appointment.status = "in_progress";

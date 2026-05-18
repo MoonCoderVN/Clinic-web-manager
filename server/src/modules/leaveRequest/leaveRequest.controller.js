@@ -1,3 +1,4 @@
+import mongoose from "mongoose";
 import LeaveRequest from "./leaveRequest.model.js";
 import Doctor from "../doctor/doctor.model.js";
 import Schedule from "../schedule/schedule.model.js";
@@ -9,6 +10,13 @@ import { emitPublic, emitToRole, emitToUser } from "../../realtime/socket.js";
 import { toDateKey, toDateOnly } from "./leaveRequest.utils.js";
 
 const ACTIVE_APPOINTMENT_STATUSES = ["pending", "confirmed", "rescheduled", "in_progress"];
+
+const makeHttpError = (statusCode, message, data = null) => {
+    const error = new Error(message);
+    error.statusCode = statusCode;
+    error.data = data;
+    return error;
+};
 
 const getMondayKey = (date) => {
     const d = new Date(date);
@@ -31,8 +39,11 @@ const today = () => {
     return date;
 };
 
-const getDoctorProfileByUserId = async (doctorUserId) =>
-    Doctor.findOne({ userId: doctorUserId }).populate("userId", "fullName email");
+const getDoctorProfileByUserId = async (doctorUserId, session = null) => {
+    const query = Doctor.findOne({ userId: doctorUserId }).populate("userId", "fullName email");
+    if (session) query.session(session);
+    return query;
+};
 
 const emitLeaveChanged = (action, leaveRequest) => {
     const payload = {
@@ -59,9 +70,9 @@ const emitScheduleChanged = (leaveRequest) => {
     emitPublic("slots:changed", payload);
 };
 
-const findAffectedAppointments = async (leaveRequest, doctorProfileId) => {
+const findAffectedAppointments = async (leaveRequest, doctorProfileId, session = null) => {
     const { start, end } = getDayRange(leaveRequest.date_off);
-    return Appointment.find({
+    const query = Appointment.find({
         doctorId: doctorProfileId,
         $or: [
             { appointmentDate: { $gte: start, $lt: end } },
@@ -73,6 +84,8 @@ const findAffectedAppointments = async (leaveRequest, doctorProfileId) => {
         .populate("serviceId", "name")
         .sort({ appointmentDate: 1, date: 1, startTime: 1 })
         .lean();
+    if (session) query.session(session);
+    return query;
 };
 
 const serializeConflict = (appointment) => ({
@@ -186,77 +199,83 @@ export const getLeaveRequests = async (req, res, next) => {
 };
 
 export const approveLeaveRequest = async (req, res, next) => {
+    const session = await mongoose.startSession();
     try {
-        const leaveRequest = await LeaveRequest.findById(req.params.id);
-        if (!leaveRequest) {
-            return res.status(404).json({ success: false, message: "Không tìm thấy đơn xin nghỉ" });
-        }
-        if (leaveRequest.status !== "pending") {
-            return res.status(400).json({ success: false, message: "Chỉ có thể duyệt đơn đang chờ duyệt" });
-        }
-        if (toDateOnly(leaveRequest.date_off) < today()) {
-            return res.status(400).json({ success: false, message: "Không thể duyệt đơn nghỉ cho ngày đã qua" });
-        }
+        let approvedLeaveRequest = null;
 
-        const doctorProfile = await getDoctorProfileByUserId(leaveRequest.doctor_id);
-        if (!doctorProfile) {
-            return res.status(404).json({ success: false, message: "Không tìm thấy hồ sơ bác sĩ" });
-        }
+        await session.withTransaction(async () => {
+            const leaveRequest = await LeaveRequest.findById(req.params.id).session(session);
+            if (!leaveRequest) {
+                throw makeHttpError(404, "Không tìm thấy đơn xin nghỉ");
+            }
+            if (leaveRequest.status !== "pending") {
+                throw makeHttpError(400, "Chỉ có thể duyệt đơn đang chờ duyệt");
+            }
+            if (toDateOnly(leaveRequest.date_off) < today()) {
+                throw makeHttpError(400, "Không thể duyệt đơn nghỉ cho ngày đã qua");
+            }
 
-        const conflicts = await findAffectedAppointments(leaveRequest, doctorProfile._id);
-        if (conflicts.length > 0) {
-            return res.status(409).json({
-                success: false,
-                message: "Không thể duyệt nghỉ vì còn lịch hẹn cần xử lý trước",
-                data: { conflicts: conflicts.map(serializeConflict) },
-            });
-        }
+            const doctorProfile = await getDoctorProfileByUserId(leaveRequest.doctor_id, session);
+            if (!doctorProfile) {
+                throw makeHttpError(404, "Không tìm thấy hồ sơ bác sĩ");
+            }
 
-        const finalConflicts = await findAffectedAppointments(leaveRequest, doctorProfile._id);
-        if (finalConflicts.length > 0) {
-            return res.status(409).json({
-                success: false,
-                message: "Không thể duyệt nghỉ vì vừa phát sinh lịch hẹn cần xử lý",
-                data: { conflicts: finalConflicts.map(serializeConflict) },
-            });
-        }
+            const conflicts = await findAffectedAppointments(leaveRequest, doctorProfile._id, session);
+            if (conflicts.length > 0) {
+                throw makeHttpError(
+                    409,
+                    "Không thể duyệt nghỉ vì còn lịch hẹn cần xử lý trước",
+                    { conflicts: conflicts.map(serializeConflict) }
+                );
+            }
 
-        await Schedule.findOneAndUpdate(
-            {
-                doctorId: leaveRequest.doctor_id,
-                dayOfWeek: new Date(leaveRequest.date_off).getDay(),
-                weekStart: getMondayKey(leaveRequest.date_off),
-            },
-            {
-                doctorId: leaveRequest.doctor_id,
-                dayOfWeek: new Date(leaveRequest.date_off).getDay(),
-                weekStart: getMondayKey(leaveRequest.date_off),
-                startTime: "00:00",
-                endTime: "00:00",
-                maxSlots: 0,
-                isOff: true,
-            },
-            { new: true, upsert: true, runValidators: true }
-        );
+            await Schedule.findOneAndUpdate(
+                {
+                    doctorId: leaveRequest.doctor_id,
+                    dayOfWeek: new Date(leaveRequest.date_off).getDay(),
+                    weekStart: getMondayKey(leaveRequest.date_off),
+                },
+                {
+                    doctorId: leaveRequest.doctor_id,
+                    dayOfWeek: new Date(leaveRequest.date_off).getDay(),
+                    weekStart: getMondayKey(leaveRequest.date_off),
+                    startTime: "00:00",
+                    endTime: "00:00",
+                    maxSlots: 0,
+                    isOff: true,
+                },
+                { new: true, upsert: true, runValidators: true, session }
+            );
 
-        leaveRequest.status = "approved";
-        leaveRequest.reviewedBy = req.user.id;
-        leaveRequest.reviewedAt = new Date();
-        leaveRequest.reviewNote = String(req.body.reviewNote || "").trim();
-        await leaveRequest.save();
+            leaveRequest.status = "approved";
+            leaveRequest.reviewedBy = req.user.id;
+            leaveRequest.reviewedAt = new Date();
+            leaveRequest.reviewNote = String(req.body.reviewNote || "").trim();
+            await leaveRequest.save({ session });
+            approvedLeaveRequest = leaveRequest;
+        });
 
-        emitLeaveChanged("approved", leaveRequest);
-        emitScheduleChanged(leaveRequest);
+        emitLeaveChanged("approved", approvedLeaveRequest);
+        emitScheduleChanged(approvedLeaveRequest);
         await createNotification(
-            leaveRequest.doctor_id,
+            approvedLeaveRequest.doctor_id,
             "system",
             "Đơn xin nghỉ đã được duyệt",
-            `Đơn xin nghỉ ngày ${new Date(leaveRequest.date_off).toLocaleDateString("vi-VN")} đã được duyệt.`
+            `Đơn xin nghỉ ngày ${new Date(approvedLeaveRequest.date_off).toLocaleDateString("vi-VN")} đã được duyệt.`
         );
 
-        return apiResponse(res, 200, "Đã duyệt đơn xin nghỉ", leaveRequest);
+        return apiResponse(res, 200, "Đã duyệt đơn xin nghỉ", approvedLeaveRequest);
     } catch (error) {
+        if (error.statusCode) {
+            return res.status(error.statusCode).json({
+                success: false,
+                message: error.message,
+                ...(error.data ? { data: error.data } : {}),
+            });
+        }
         next(error);
+    } finally {
+        await session.endSession();
     }
 };
 
