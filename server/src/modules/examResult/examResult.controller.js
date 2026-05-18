@@ -11,6 +11,7 @@ import { emitAppointmentChanged, emitToRole, emitToUser } from "../../realtime/s
 import { localUploadPathFromPublicPath, toDentalRecordPublicPath } from "../../config/uploadPaths.js";
 
 const BOOKING_URL = `${process.env.CLIENT_URL || "http://localhost:5173"}/patient/book`;
+const EXAM_RESULT_ALLOWED_APPOINTMENT_STATUSES = ["confirmed", "in_progress"];
 
 const canAccessExamResult = async (req, examResult) => {
     if (req.user.role === "admin") return true;
@@ -49,6 +50,13 @@ export const createExamResult = async (req, res, next) => {
             return res.status(403).json({
                 success: false,
                 message: "Bạn không có quyền nhập kết quả cho lịch hẹn này"
+            });
+        }
+
+        if (!EXAM_RESULT_ALLOWED_APPOINTMENT_STATUSES.includes(appointment.status)) {
+            return res.status(400).json({
+                success: false,
+                message: "Chỉ có thể nhập kết quả khi lịch hẹn đã xác nhận hoặc đang khám",
             });
         }
 
@@ -302,7 +310,7 @@ export const deleteExamResult = async (req, res, next) => {
         const updatedAppointment = await Appointment.findByIdAndUpdate(
             appointment._id,
             {
-                $set: { status: "in_progress" },
+                $set: { status: "confirmed" },
                 $unset: { diagnosis: "" },
             },
             { new: true }
@@ -321,7 +329,7 @@ export const deleteExamResult = async (req, res, next) => {
 
         return apiResponse(res, 200, "Xoá kết quả khám thành công", {
             appointmentId: appointment._id,
-            status: "in_progress",
+            status: "confirmed",
         });
     } catch (error) {
         next(error);

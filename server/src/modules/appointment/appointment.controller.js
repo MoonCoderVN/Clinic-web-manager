@@ -13,6 +13,7 @@ import { emitAppointmentChanged } from "../../realtime/socket.js";
 const CHECK_IN_WINDOW_BEFORE_MS = 30 * 60 * 1000;
 const CHECK_IN_WINDOW_AFTER_MS = 60 * 60 * 1000;
 const CONFIRM_GRACE_MS = 15 * 60 * 1000;
+const ACTIVE_APPOINTMENT_STATUSES = ["pending", "confirmed", "rescheduled", "in_progress"];
 
 const parseTimeParts = (value) => {
     const match = String(value || "").trim().match(/^(\d{1,2}):(\d{2})$/);
@@ -150,6 +151,42 @@ const checkSlotConflict = async (doctorId, date, startTime, endTime, excludeId =
     return false;
 };
 
+const checkScheduleCapacity = async (doctorId, date, scheduleEntry, excludeId = null) => {
+    const maxSlots = Number(scheduleEntry?.maxSlots);
+    if (!Number.isFinite(maxSlots)) return { valid: true };
+    if (maxSlots <= 0) return { valid: false, message: "Ca làm việc này không còn nhận thêm lịch hẹn" };
+
+    const dayStart = parseLocalDateOnly(date);
+    const workStart = parseTimeParts(scheduleEntry.startTime)?.totalMinutes;
+    const workEnd = parseTimeParts(scheduleEntry.endTime)?.totalMinutes;
+    if (!dayStart || workStart === undefined || workEnd === undefined) return { valid: true };
+
+    const dayEnd = new Date(dayStart);
+    dayEnd.setHours(23, 59, 59, 999);
+    const filter = {
+        doctorId,
+        $or: [
+            { appointmentDate: { $gte: dayStart, $lte: dayEnd } },
+            { date: { $gte: dayStart, $lte: dayEnd } },
+        ],
+        status: { $in: ACTIVE_APPOINTMENT_STATUSES },
+    };
+    if (excludeId) filter._id = { $ne: excludeId };
+
+    const appointments = await Appointment.find(filter).select("startTime endTime timeSlot").lean();
+    const bookedInSchedule = appointments.filter((appointment) => {
+        const start = parseTimeParts(appointment.startTime || appointment.timeSlot)?.totalMinutes;
+        const end = parseTimeParts(appointment.endTime)?.totalMinutes ?? (start === undefined ? null : start + 30);
+        if (start === undefined || end === null) return false;
+        return start < workEnd && end > workStart;
+    }).length;
+
+    if (bookedInSchedule >= maxSlots) {
+        return { valid: false, message: "Ca làm việc này đã đạt số lượng lịch hẹn tối đa" };
+    }
+    return { valid: true };
+};
+
 const getAppointmentDateTime = (appointment) => {
     const apptTime = appointment?.startTime || appointment?.timeSlot;
     const apptDate = appointment?.appointmentDate || appointment?.date;
@@ -230,7 +267,7 @@ const validateDoctorSchedule = async (doctor, dateStr, timeStr, durationMin) => 
         });
     }
 
-    if (!scheduleEntry || !scheduleEntry.startTime || !scheduleEntry.endTime) {
+    if (!scheduleEntry || scheduleEntry.isOff || !scheduleEntry.startTime || !scheduleEntry.endTime) {
         return {
             valid: false,
             message: `Bác sĩ không có ca làm việc vào ${dayNames[dayOfWeek]}`,
@@ -258,7 +295,7 @@ const validateDoctorSchedule = async (doctor, dateStr, timeStr, durationMin) => 
         return { valid: false, message: "Bác sĩ đã nghỉ vào ngày này, vui lòng chọn ngày hoặc bác sĩ khác" };
     }
 
-    return { valid: true };
+    return { valid: true, scheduleEntry };
 };
 
 // ──────────────────────────────────────────────────────────────────
@@ -297,6 +334,10 @@ export const createAppointment = async (req, res, next) => {
         const scheduleCheck = await validateDoctorSchedule(doctor, effectiveDate, effectiveTime, duration);
         if (!scheduleCheck.valid) {
             return res.status(400).json({ success: false, message: scheduleCheck.message });
+        }
+        const capacityCheck = await checkScheduleCapacity(doctorId, effectiveDate, scheduleCheck.scheduleEntry);
+        if (!capacityCheck.valid) {
+            return res.status(409).json({ success: false, message: capacityCheck.message });
         }
 
         // Check conflict với appointment đã tồn tại
@@ -494,6 +535,10 @@ export const rescheduleAppointment = async (req, res, next) => {
             if (!scheduleCheck.valid) {
                 return res.status(400).json({ success: false, message: scheduleCheck.message });
             }
+            const capacityCheck = await checkScheduleCapacity(appointment.doctorId, newDate, scheduleCheck.scheduleEntry, appointment._id);
+            if (!capacityCheck.valid) {
+                return res.status(409).json({ success: false, message: capacityCheck.message });
+            }
         }
 
         // Check for slot conflicts
@@ -532,6 +577,14 @@ export const rescheduleAppointment = async (req, res, next) => {
                 `Một lịch hẹn đã được bệnh nhân dời sang ${newTime} ngày ${dateTimeCheck.date.toLocaleDateString("vi-VN")}. Vui lòng xác nhận lại.`
             );
         }
+
+        const admins = await User.find({ role: "admin" }).select("_id");
+        await Promise.all(admins.map((admin) => createNotification(
+            admin._id,
+            "appointment",
+            "Lịch hẹn đã được đổi - cần xác nhận lại",
+            `Một lịch hẹn đã được dời sang ${newTime} ngày ${dateTimeCheck.date.toLocaleDateString("vi-VN")}. Vui lòng kiểm tra và xác nhận lại.`
+        )));
 
         await emitAppointmentChanged(appointment, "rescheduled");
         return apiResponse(res, 200, "Đổi lịch thành công", appointment);

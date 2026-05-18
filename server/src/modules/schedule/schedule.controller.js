@@ -6,6 +6,8 @@ import apiResponse from "../../utils/apiResponse.js";
 import { emitPublic, emitToRole, emitToUser } from "../../realtime/socket.js";
 import { filterSlotsByApprovedLeave } from "../leaveRequest/leaveRequest.utils.js";
 
+const ACTIVE_APPOINTMENT_STATUSES = ["pending", "confirmed", "rescheduled", "in_progress"];
+
 const emitScheduleChanged = (action, scheduleOrPayload = {}) => {
     const doctorUserId = scheduleOrPayload.doctorId;
     const payload = {
@@ -169,7 +171,7 @@ export const computeDoctorAvailability = async ({ doctorId, date, serviceId, dur
             { appointmentDate: { $gte: dayStart, $lte: dayEnd } },
             { date: { $gte: dayStart, $lte: dayEnd } },
         ],
-        status: { $nin: ["cancelled"] },
+        status: { $in: ACTIVE_APPOINTMENT_STATUSES },
     }).select("startTime endTime timeSlot").lean();
 
     const occupied = appointments.map((appointment) => {
@@ -187,6 +189,12 @@ export const computeDoctorAvailability = async ({ doctorId, date, serviceId, dur
         const workStart = toMinutes(schedule.startTime);
         const workEnd = toMinutes(schedule.endTime);
         if (workStart === null || workEnd === null || workEnd <= workStart) continue;
+
+        const maxSlots = Number(schedule.maxSlots);
+        if (Number.isFinite(maxSlots)) {
+            const bookedInSchedule = occupied.filter((slot) => slot.start < workEnd && slot.end > workStart).length;
+            if (bookedInSchedule >= maxSlots) continue;
+        }
 
         for (let cursor = workStart; cursor + duration <= workEnd; cursor += duration) {
             if (cursor < minStartMinutes) continue;

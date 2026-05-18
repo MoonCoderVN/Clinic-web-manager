@@ -33,7 +33,7 @@ router.get("/all", authorize("admin", "doctor"), getAllAppointments);
 router.get("/:id", validateParams(Joi.object({ id: Joi.string().required() })), getAppointmentById);
 
 // Reschedule & cancel
-router.put("/:id/reschedule", validateParams(Joi.object({ id: Joi.string().required() })), validate(rescheduleAppointmentSchema), rescheduleAppointment);
+router.put("/:id/reschedule", validateParams(Joi.object({ id: Joi.string().required() })), authorize("patient", "doctor", "admin"), validate(rescheduleAppointmentSchema), rescheduleAppointment);
 router.delete("/:id", validateParams(Joi.object({ id: Joi.string().required() })), validate(cancelAppointmentSchema), cancelAppointment);
 router.patch("/:id/cancel", validateParams(Joi.object({ id: Joi.string().required() })), validate(cancelAppointmentSchema), cancelAppointment);
 

@@ -34,7 +34,7 @@ export const sendAppointmentHourReminders = async () => {
 
         // Tìm các lịch hẹn confirmed hôm nay, chưa gửi nhắc 1h
         const appointments = await Appointment.find({
-            status: { $in: ["confirmed", "pending", "rescheduled"] },
+            status: "confirmed",
             appointmentDate: { $gte: todayStart, $lte: todayEnd },
             hourReminderSent: { $ne: true },
         })
