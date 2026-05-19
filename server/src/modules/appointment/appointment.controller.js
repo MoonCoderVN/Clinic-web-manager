@@ -12,7 +12,6 @@ import { emitAppointmentChanged } from "../../realtime/socket.js";
 
 const CHECK_IN_WINDOW_BEFORE_MS = 30 * 60 * 1000;
 const CHECK_IN_WINDOW_AFTER_MS = 60 * 60 * 1000;
-const CONFIRM_GRACE_MS = 15 * 60 * 1000;
 const ACTIVE_APPOINTMENT_STATUSES = ["pending", "confirmed", "rescheduled", "in_progress"];
 
 const parseTimeParts = (value) => {
@@ -120,7 +119,7 @@ const checkSlotConflict = async (doctorId, date, startTime, endTime, excludeId =
             { appointmentDate: { $gte: dayStart, $lte: dayEnd } },
             { date: { $gte: dayStart, $lte: dayEnd } },
         ],
-        status: { $nin: ["cancelled"] },
+        status: { $in: ACTIVE_APPOINTMENT_STATUSES },
     };
     if (excludeId) filter._id = { $ne: excludeId };
 
@@ -191,6 +190,20 @@ const getAppointmentDateTime = (appointment) => {
     const apptTime = appointment?.startTime || appointment?.timeSlot;
     const apptDate = appointment?.appointmentDate || appointment?.date;
     return buildAppointmentDateTime(apptDate, apptTime)?.dateTime || null;
+};
+
+const formatAppointmentLabel = (appointment) => {
+    const apptTime = appointment?.startTime || appointment?.timeSlot || "giờ đã đặt";
+    const apptDate = appointment?.appointmentDate || appointment?.date;
+    const dateLabel = apptDate ? new Date(apptDate).toLocaleDateString("vi-VN") : "ngày đã đặt";
+    return `${apptTime} ngày ${dateLabel}`;
+};
+
+const getCancellationActorLabel = (role) => {
+    if (role === "patient") return "Bệnh nhân";
+    if (role === "doctor") return "Bác sĩ";
+    if (role === "admin") return "Quản trị viên";
+    return "Người dùng";
 };
 
 const ensurePatientCanModifyAppointment = (appointment, action = "thực hiện thao tác") => {
@@ -644,6 +657,27 @@ export const cancelAppointment = async (req, res, next) => {
             `Lịch hẹn của bạn đã bị hủy. ${reason ? "Lý do: " + reason : ""}`
         );
 
+        const appointmentLabel = formatAppointmentLabel(appointment);
+        const actorLabel = getCancellationActorLabel(req.user.role);
+        const reasonText = reason ? ` Lý do: ${reason}` : "";
+        const doctorProfile = await Doctor.findById(appointment.doctorId).select("userId");
+        if (doctorProfile?.userId) {
+            await createNotification(
+                doctorProfile.userId,
+                "appointment",
+                "Lịch hẹn bị huỷ",
+                `${actorLabel} đã huỷ lịch hẹn lúc ${appointmentLabel}.${reasonText}`
+            );
+        }
+
+        const admins = await User.find({ role: "admin" }).select("_id");
+        await Promise.all(admins.map((admin) => createNotification(
+            admin._id,
+            "appointment",
+            "Lịch hẹn bị huỷ",
+            `${actorLabel} đã huỷ lịch hẹn lúc ${appointmentLabel}.${reasonText}`
+        )));
+
         await emitAppointmentChanged(appointment, "cancelled");
         return apiResponse(res, 200, "Hủy lịch thành công", appointment);
     } catch (error) {
@@ -710,14 +744,6 @@ export const confirmAppointment = async (req, res, next) => {
             return res.status(400).json({
                 success: false,
                 message: `Chỉ có thể xác nhận lịch hẹn ở trạng thái "Chờ xác nhận" hoặc "Đã đổi lịch"`,
-            });
-        }
-
-        const appointmentDateTime = getAppointmentDateTime(appointment);
-        if (appointmentDateTime && appointmentDateTime.getTime() + CONFIRM_GRACE_MS < Date.now()) {
-            return res.status(400).json({
-                success: false,
-                message: "Không thể xác nhận lịch hẹn đã quá hạn",
             });
         }
 

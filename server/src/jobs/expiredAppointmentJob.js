@@ -5,6 +5,7 @@ import { createNotification } from "../modules/notification/notification.service
 import { emitPublic } from "../realtime/socket.js";
 
 const EXPIRABLE_STATUSES = ["pending", "confirmed", "rescheduled"];
+const STALE_IN_PROGRESS_MS = 4 * 60 * 60 * 1000;
 
 const parseTimeParts = (value) => {
     const match = String(value || "").trim().match(/^(\d{1,2}):(\d{2})$/);
@@ -66,51 +67,67 @@ const formatAppointmentLabel = (appointment) => {
     return `${timeValue || "giờ đã đặt"} ngày ${dateLabel}`;
 };
 
-const createExpiryNotifications = async (appointments) => {
+const populateAppointmentQuery = (query) =>
+    query
+        .select("appointmentDate date startTime timeSlot status patientId doctorId serviceId")
+        .populate("patientId", "fullName")
+        .populate("serviceId", "name")
+        .populate({ path: "doctorId", select: "userId", populate: { path: "userId", select: "_id" } });
+
+const createCancellationNotifications = async (appointments, mode = "expired") => {
     if (!appointments.length) return;
 
     const admins = await User.find({ role: "admin" }).select("_id").lean();
     const tasks = [];
+    const isStaleInProgress = mode === "stale-in-progress";
 
     for (const appointment of appointments) {
         const appointmentLabel = formatAppointmentLabel(appointment);
         const serviceName = appointment.serviceId?.name || "dịch vụ nha khoa";
         const patientName = appointment.patientId?.fullName || "Bệnh nhân";
         const doctorUserId = appointment.doctorId?.userId?._id || appointment.doctorId?.userId;
+        const patientTitle = isStaleInProgress ? "Ca khám đã bị hệ thống huỷ" : "Lịch hẹn đã quá hạn";
+        const staffTitle = isStaleInProgress ? "Ca khám bị treo đã được hệ thống huỷ" : "Một lịch hẹn đã quá hạn";
+        const adminTitle = isStaleInProgress
+            ? "Có ca khám bị treo đã được hệ thống huỷ"
+            : "Có lịch hẹn quá hạn đã được hệ thống huỷ";
+        const patientMessage = isStaleInProgress
+            ? `Ca khám ${serviceName} lúc ${appointmentLabel} bị treo quá lâu và được hệ thống tự động huỷ. Vui lòng liên hệ phòng khám nếu cần hỗ trợ.`
+            : `Lịch hẹn ${serviceName} lúc ${appointmentLabel} đã quá hạn và được hệ thống tự động huỷ. Vui lòng đặt lịch mới nếu bạn vẫn cần khám.`;
+        const staffMessage = isStaleInProgress
+            ? `Ca khám của ${patientName} lúc ${appointmentLabel} bị treo quá lâu và được hệ thống tự động huỷ.`
+            : `Lịch hẹn của ${patientName} lúc ${appointmentLabel} đã quá hạn và được hệ thống tự động huỷ.`;
 
         if (appointment.patientId?._id) {
-            tasks.push(createNotification(
-                appointment.patientId._id,
-                "appointment",
-                "Lịch hẹn đã quá hạn",
-                `Lịch hẹn ${serviceName} lúc ${appointmentLabel} đã quá hạn và được hệ thống tự động huỷ. Vui lòng đặt lịch mới nếu bạn vẫn cần khám.`
-            ));
+            tasks.push(createNotification(appointment.patientId._id, "appointment", patientTitle, patientMessage));
         }
 
         if (doctorUserId) {
-            tasks.push(createNotification(
-                doctorUserId,
-                "appointment",
-                "Một lịch hẹn đã quá hạn",
-                `Lịch hẹn của ${patientName} lúc ${appointmentLabel} đã quá hạn và được hệ thống tự động huỷ.`
-            ));
+            tasks.push(createNotification(doctorUserId, "appointment", staffTitle, staffMessage));
         }
 
         for (const admin of admins) {
-            tasks.push(createNotification(
-                admin._id,
-                "appointment",
-                "Có lịch hẹn quá hạn đã được hệ thống huỷ",
-                `Lịch hẹn của ${patientName} lúc ${appointmentLabel} đã quá hạn và được hệ thống tự động huỷ.`
-            ));
+            tasks.push(createNotification(admin._id, "appointment", adminTitle, staffMessage));
         }
     }
 
     const results = await Promise.allSettled(tasks);
     const failedCount = results.filter((result) => result.status === "rejected").length;
     if (failedCount > 0) {
-        console.warn(`[ExpiredAppointmentJob] Failed to create ${failedCount} expiry notifications.`);
+        console.warn(`[ExpiredAppointmentJob] Failed to create ${failedCount} cancellation notifications.`);
     }
+};
+
+const emitBulkAppointmentCancellation = (action, appointmentIds) => {
+    emitPublic("appointment:changed", {
+        action,
+        count: appointmentIds.length,
+        appointmentIds: appointmentIds.map((id) => id.toString()),
+    });
+    emitPublic("slots:changed", {
+        action,
+        count: appointmentIds.length,
+    });
 };
 
 export const expireOverdueAppointments = async () => {
@@ -118,17 +135,13 @@ export const expireOverdueAppointments = async () => {
     const todayStart = new Date(now);
     todayStart.setHours(0, 0, 0, 0);
 
-    const candidates = await Appointment.find({
+    const candidates = await populateAppointmentQuery(Appointment.find({
         status: { $in: EXPIRABLE_STATUSES },
         $or: [
             { appointmentDate: { $lt: now } },
             { date: { $lt: now } },
         ],
-    })
-        .select("appointmentDate date startTime timeSlot status patientId doctorId serviceId")
-        .populate("patientId", "fullName")
-        .populate("serviceId", "name")
-        .populate({ path: "doctorId", select: "userId", populate: { path: "userId", select: "_id" } });
+    }));
 
     const overdue = candidates.filter((appointment) => {
         const dateTime = getAppointmentDateTime(appointment);
@@ -143,33 +156,55 @@ export const expireOverdueAppointments = async () => {
     });
 
     const overdueIds = overdue.map((appointment) => appointment._id);
-    if (overdueIds.length === 0) return;
+    if (overdueIds.length > 0) {
+        await Appointment.updateMany(
+            { _id: { $in: overdueIds }, status: { $in: EXPIRABLE_STATUSES } },
+            {
+                $set: {
+                    status: "cancelled",
+                    cancelReason: "Hệ thống tự động huỷ do lịch hẹn đã quá hạn",
+                    cancelledBy: "system",
+                    cancelledAt: now,
+                },
+            }
+        );
 
-    await Appointment.updateMany(
-        { _id: { $in: overdueIds }, status: { $in: EXPIRABLE_STATUSES } },
-        {
-            $set: {
-                status: "cancelled",
-                cancelReason: "Hệ thống tự động huỷ do lịch hẹn đã quá hạn",
-                cancelledBy: "system",
-                cancelledAt: now,
-            },
-        }
-    );
+        await createCancellationNotifications(overdue, "expired");
+        emitBulkAppointmentCancellation("expired-bulk", overdueIds);
+        console.log(`[ExpiredAppointmentJob] Auto-cancelled ${overdue.length} overdue appointments.`);
+    }
 
-    await createExpiryNotifications(overdue);
+    const staleCandidates = await populateAppointmentQuery(Appointment.find({
+        status: "in_progress",
+        $or: [
+            { appointmentDate: { $lt: now } },
+            { date: { $lt: now } },
+        ],
+    }));
 
-    emitPublic("appointment:changed", {
-        action: "expired-bulk",
-        count: overdueIds.length,
-        appointmentIds: overdueIds.map((id) => id.toString()),
+    const staleInProgress = staleCandidates.filter((appointment) => {
+        const dateTime = getAppointmentDateTime(appointment);
+        return dateTime ? dateTime.getTime() + STALE_IN_PROGRESS_MS < now.getTime() : false;
     });
-    emitPublic("slots:changed", {
-        action: "expired-bulk",
-        count: overdueIds.length,
-    });
 
-    console.log(`[ExpiredAppointmentJob] Auto-cancelled ${overdue.length} overdue appointments.`);
+    const staleIds = staleInProgress.map((appointment) => appointment._id);
+    if (staleIds.length > 0) {
+        await Appointment.updateMany(
+            { _id: { $in: staleIds }, status: "in_progress" },
+            {
+                $set: {
+                    status: "cancelled",
+                    cancelReason: "Hệ thống tự động huỷ do ca khám bị treo quá lâu",
+                    cancelledBy: "system",
+                    cancelledAt: now,
+                },
+            }
+        );
+
+        await createCancellationNotifications(staleInProgress, "stale-in-progress");
+        emitBulkAppointmentCancellation("stale-in-progress-cancelled", staleIds);
+        console.log(`[ExpiredAppointmentJob] Auto-cancelled ${staleIds.length} stale in-progress appointments.`);
+    }
 };
 
 cron.schedule("*/15 * * * *", () => {
@@ -178,4 +213,4 @@ cron.schedule("*/15 * * * *", () => {
     });
 }, { timezone: "Asia/Ho_Chi_Minh" });
 
-console.log("[ExpiredAppointmentJob] Initialized — checks every 15 minutes.");
+console.log("[ExpiredAppointmentJob] Initialized - checks every 15 minutes.");
