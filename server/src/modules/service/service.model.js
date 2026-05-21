@@ -7,6 +7,10 @@ const serviceSchema = new mongoose.Schema({
         unique: true,
     },
     description: String,
+    image: {
+        type: String,
+        default: "",
+    },
     price: {
         type: Number,
         required: true,
