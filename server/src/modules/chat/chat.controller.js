@@ -2,8 +2,10 @@ import ChatSession from "./chatSession.model.js";
 import Appointment from "../appointment/appointment.model.js";
 import Doctor from "../doctor/doctor.model.js";
 import Service from "../service/service.model.js";
+import Schedule from "../schedule/schedule.model.js";
 import { runRagChain, runRagChainStream, retrieveRagContext } from "../../rag/chain/ragChain.js";
 import { computeDoctorAvailability } from "../schedule/schedule.controller.js";
+import { filterSlotsByApprovedLeave } from "../leaveRequest/leaveRequest.utils.js";
 import apiResponse from "../../utils/apiResponse.js";
 
 const normalizeText = (value = "") => value
@@ -48,8 +50,17 @@ const hasRelativeDateSignal = (text = "") =>
 const hasTimePeriodSignal = (text = "") =>
     /(sang|buoi sang|chieu|buoi chieu|toi|buoi toi|morning|afternoon|evening)/.test(text);
 
-const classifyChatIntent = (message = "") => {
+const hasBookingFlowSignal = (text = "") =>
+    /(muon dat|muon hen|cho toi dat|can dat lich|dat lich kham|ho tro dat|tu van dat lich|dang ky kham|dang ky lich|can kham|giup toi dat|huong dan dat|bat dau dat)/.test(text);
+
+const classifyChatIntent = (message = "", bookingContext = null) => {
     const text = normalizeText(message);
+
+    // In-progress booking flow (bookingContext passed from frontend)
+    if (bookingContext?.step) {
+        return { intent: "BOOKING_FLOW", wantsDoctorInfo: false, wantsServiceInfo: false, bookingAction: true, hasSpecificEntities: false };
+    }
+
     const wantsDoctorInfo = hasDoctorInfoSignal(text);
     const wantsServiceInfo = hasServiceInfoSignal(text);
     const bookingAction = hasBookingActionSignal(text);
@@ -57,6 +68,11 @@ const classifyChatIntent = (message = "") => {
     const specificPeriod = hasTimePeriodSignal(text);
     const doctorNameHint = /(bac si|bs)\s+[a-zA-Z\u00C0-\u1EF9]{2,}/i.test(message) && !/(bac si nao|danh sach bac si|doi ngu bac si)/.test(text);
     const hasSpecificEntities = specificDate || specificPeriod || doctorNameHint;
+
+    // Explicit booking flow start (without a specific doctor name or date already provided)
+    if (hasBookingFlowSignal(text) && !doctorNameHint && !specificDate) {
+        return { intent: "BOOKING_FLOW", wantsDoctorInfo, wantsServiceInfo, bookingAction: true, hasSpecificEntities: false };
+    }
 
     if (bookingAction && hasSpecificEntities && (wantsDoctorInfo || wantsServiceInfo)) {
         return { intent: "MIXED", wantsDoctorInfo, wantsServiceInfo, bookingAction, hasSpecificEntities };
@@ -71,11 +87,22 @@ const classifyChatIntent = (message = "") => {
 };
 
 const getNextDateForWeekday = (weekday, nextWeek = false) => {
-    const date = getCurrentDate();
-    const current = date.getDay();
+    const today = getCurrentDate();
+    const current = today.getDay();
+    if (nextWeek) {
+        const daysSinceMonday = current === 0 ? 6 : current - 1;
+        const thisMonday = new Date(today);
+        thisMonday.setDate(today.getDate() - daysSinceMonday);
+        const nextMonday = new Date(thisMonday);
+        nextMonday.setDate(thisMonday.getDate() + 7);
+        const offsetFromMonday = weekday === 0 ? 6 : weekday - 1;
+        nextMonday.setDate(nextMonday.getDate() + offsetFromMonday);
+        return nextMonday;
+    }
+    const date = new Date(today);
     let diff = (weekday - current + 7) % 7;
-    if (diff === 0 || nextWeek) diff += 7;
-    date.setDate(date.getDate() + diff);
+    if (diff === 0) diff += 7;
+    date.setDate(today.getDate() + diff);
     return date;
 };
 
@@ -159,6 +186,338 @@ const findDoctorsFromMessage = async (message = "") => {
         if (!name) return false;
         return name.split(/\s+/).some((part) => part.length >= 3 && text.includes(part)) || text.includes(name);
     });
+};
+
+const getMondayStr = (date) => {
+    const d = new Date(date.getTime());
+    const day = d.getDay();
+    const diff = d.getDate() - day + (day === 0 ? -6 : 1);
+    d.setDate(diff);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+};
+
+const calcSlots = (startTime, endTime, duration, bookedAppointments) => {
+    const slots = [];
+    const [startH, startM] = startTime.split(":").map(Number);
+    const [endH, endM] = endTime.split(":").map(Number);
+    let currentMin = startH * 60 + startM;
+    const endMin = endH * 60 + endM;
+    while (currentMin + duration <= endMin) {
+        const slotH = Math.floor(currentMin / 60);
+        const slotM = currentMin % 60;
+        const slotTime = `${String(slotH).padStart(2, "0")}:${String(slotM).padStart(2, "0")}`;
+        const slotEndMin = currentMin + duration;
+        const isBooked = bookedAppointments.some((appt) => {
+            const apptStart = appt.startTime || appt.timeSlot;
+            if (!apptStart) return false;
+            const [aH, aM] = apptStart.split(":").map(Number);
+            const aStart = aH * 60 + aM;
+            let aEnd = aStart + 30;
+            if (appt.endTime) { const [eH, eM] = appt.endTime.split(":").map(Number); aEnd = eH * 60 + eM; }
+            return currentMin < aEnd && slotEndMin > aStart;
+        });
+        slots.push({ time: slotTime, available: !isBooked });
+        currentMin += duration;
+    }
+    return slots;
+};
+
+const filterBookingSlotsByTimePeriod = (slots, timePeriod) => {
+    if (!timePeriod) return slots;
+    const ranges = { morning: [7 * 60, 12 * 60], afternoon: [12 * 60, 17 * 60 + 30], evening: [17 * 60 + 30, 21 * 60] };
+    const range = ranges[timePeriod];
+    if (!range) return slots;
+    const toMin = (t) => { const [h, m] = t.split(":").map(Number); return h * 60 + m; };
+    return slots.filter((s) => { const start = toMin(s.time); return start >= range[0] && start < range[1]; });
+};
+
+const formatDateVN = (dateStr) => {
+    const [y, m, d] = dateStr.split("-").map(Number);
+    return new Date(y, m - 1, d).toLocaleDateString("vi-VN", { weekday: "long", day: "2-digit", month: "2-digit", year: "numeric" });
+};
+
+const DATE_PAGE_SIZE = 5;
+const DATE_MAX_PAGE = 3;
+
+const parseDateForBooking = (message = "") => {
+    const text = normalizeText(message);
+    const today = getCurrentDate();
+    const explicit = text.match(/\b(\d{1,2})[/-](\d{1,2})(?:[/-](\d{4}))?\b/);
+    if (explicit) {
+        const year = explicit[3] ? Number(explicit[3]) : today.getFullYear();
+        const d = new Date(year, Number(explicit[2]) - 1, Number(explicit[1]));
+        const todayMidnight = new Date(today); todayMidnight.setHours(0, 0, 0, 0);
+        if (!isNaN(d.getTime()) && d >= todayMidnight) return formatDateValue(d);
+    }
+    const weekdayMap = [
+        { pattern: /chu nhat|cn/, day: 0 },
+        { pattern: /thu 2|thu hai|t2|monday/, day: 1 },
+        { pattern: /thu 3|thu ba|t3|tuesday/, day: 2 },
+        { pattern: /thu 4|thu tu|t4|wednesday/, day: 3 },
+        { pattern: /thu 5|thu nam|t5|thursday/, day: 4 },
+        { pattern: /thu 6|thu sau|t6|friday/, day: 5 },
+        { pattern: /thu 7|thu bay|t7|saturday/, day: 6 },
+    ];
+    const wdMatch = weekdayMap.find((item) => item.pattern.test(text));
+    if (!wdMatch) return null;
+    const isNextWeek = text.includes("tuan toi") || text.includes("tuan sau");
+    return formatDateValue(getNextDateForWeekday(wdMatch.day, isNextWeek));
+};
+
+const parseTimeForBooking = (message = "") => {
+    const text = normalizeText(message);
+    const m = text.match(/\b(\d{1,2})[h:]\s*(\d{0,2})\b/);
+    if (m) {
+        const h = Number(m[1]);
+        const mn = Number(m[2] || 0);
+        if (h >= 0 && h <= 23) return `${String(h).padStart(2, "0")}:${String(mn).padStart(2, "0")}`;
+    }
+    return null;
+};
+
+const matchServiceFromText = (text, services) => {
+    const norm = normalizeText(text);
+    const matched = services.filter((s) =>
+        normalizeText(s.name).split(/\s+/).some((p) => p.length >= 3 && norm.includes(p))
+    );
+    return matched.length === 1 ? matched[0] : null;
+};
+
+const matchSlotFromText = (text, slots) => {
+    const norm = normalizeText(text);
+    const timeHint = parseTimeForBooking(text);
+    const nameParts = norm.split(/\s+/).filter((p) => p.length >= 3);
+    let filtered = slots;
+    if (timeHint) {
+        filtered = filtered.filter((s) => s.time === timeHint);
+    }
+    if (nameParts.length) {
+        const nameFiltered = filtered.filter((s) =>
+            nameParts.some((p) => normalizeText(s.doctorName).includes(p))
+        );
+        if (nameFiltered.length) filtered = nameFiltered;
+    }
+    return filtered.length === 1 ? filtered[0] : null;
+};
+
+const generateDateQuickReplies = (page = 0) => {
+    const today = getCurrentDate();
+    const formatShort = (d) => `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}`;
+    const dayNames = ["Chủ nhật", "Thứ hai", "Thứ ba", "Thứ tư", "Thứ năm", "Thứ sáu", "Thứ bảy"];
+    const start = page * DATE_PAGE_SIZE;
+    const options = [];
+    for (let i = 0; i < DATE_PAGE_SIZE; i++) {
+        const d = new Date(today.getTime());
+        d.setDate(d.getDate() + start + i);
+        let label;
+        if (page === 0 && i === 0) label = "Hôm nay";
+        else if (page === 0 && i === 1) label = "Ngày mai";
+        else label = dayNames[d.getDay()];
+        options.push({
+            label: `${label} (${formatShort(d)})`,
+            value: `${label} (${formatShort(d)})`,
+            bookingData: { date: formatDateValue(d), step: "doctor_select" },
+        });
+    }
+    if (page < DATE_MAX_PAGE) {
+        options.push({ label: "Xem thêm ngày →", value: "Xem thêm ngày", bookingData: { datePage: page + 1, step: "date_select" } });
+    }
+    if (page > 0) {
+        options.push({ label: "← Trở về", value: "Trở về", bookingData: { datePage: page - 1, step: "date_select" } });
+    }
+    return options;
+};
+
+const getAvailableSlotsForBooking = async (dateStr, serviceId) => {
+    const [y, m, d] = dateStr.split("-").map(Number);
+    const targetDate = new Date(y, m - 1, d);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    if (targetDate < today) return [];
+
+    const dayOfWeek = targetDate.getDay();
+    const weekStart = getMondayStr(targetDate);
+
+    const service = await Service.findOne({ _id: serviceId, isActive: true, isDeleted: { $ne: true } }).lean();
+    if (!service) return [];
+    const duration = service.duration || 30;
+
+    const doctors = await Doctor.find({ services: serviceId }).populate("userId", "fullName isActive").lean();
+    const dayStart = new Date(targetDate); dayStart.setHours(0, 0, 0, 0);
+    const dayEnd = new Date(targetDate); dayEnd.setHours(23, 59, 59, 999);
+    const result = [];
+
+    for (const doctor of doctors) {
+        if (!doctor.userId || doctor.userId.isActive === false) continue;
+        const doctorUserId = doctor.userId._id;
+
+        let scheduleEntry = await Schedule.findOne({ doctorId: doctorUserId, dayOfWeek, weekStart }).lean();
+        if (!scheduleEntry) scheduleEntry = await Schedule.findOne({ doctorId: doctorUserId, dayOfWeek, weekStart: null }).lean();
+        if (!scheduleEntry || scheduleEntry.isOff || !scheduleEntry.startTime || !scheduleEntry.endTime) continue;
+
+        const booked = await Appointment.find({
+            doctorId: doctor._id,
+            $or: [{ appointmentDate: { $gte: dayStart, $lte: dayEnd } }, { date: { $gte: dayStart, $lte: dayEnd } }],
+            status: { $nin: ["cancelled"] },
+        }).select("startTime endTime timeSlot").lean();
+
+        const allSlots = calcSlots(scheduleEntry.startTime, scheduleEntry.endTime, duration, booked);
+        const afterLeave = await filterSlotsByApprovedLeave(allSlots, doctorUserId, dateStr);
+        const doctorName = doctor.userId.fullName || "Bác sĩ";
+        const doctorId = doctor._id.toString();
+        for (const slot of afterLeave) {
+            if (slot.available) result.push({ doctorId, doctorName, time: slot.time });
+        }
+    }
+    return result.sort((a, b) => a.time.localeCompare(b.time));
+};
+
+const hasBookingCancelSignal = (text = "") =>
+    /^(huy|thoi|bo qua|khong muon dat|thoat|exit|cancel|quay lai)/.test(text) || text === "huy dat lich";
+
+const conductBookingFlow = async (message, bookingContext, isAuthenticated) => {
+    let ctx = bookingContext || {};
+    const text = normalizeText(message || "");
+
+    // Allow user to cancel the booking flow mid-way
+    if (ctx.step && ctx.step !== "confirm" && hasBookingCancelSignal(text)) {
+        return {
+            answer: "Đã hủy đặt lịch. Bạn cần hỗ trợ thêm điều gì không?",
+            sources: [],
+            uiState: "done",
+            quickReplies: [
+                { label: "Đặt lịch khám", value: "Tôi muốn đặt lịch" },
+                { label: "Xem dịch vụ", value: "Cho tôi xem bảng giá dịch vụ" },
+            ],
+            bookingAssist: null,
+        };
+    }
+
+    const SLOTS_PER_PAGE = 6;
+
+    // Step 1: No service selected yet
+    if (!ctx.serviceId) {
+        const services = await Service.find({ isActive: true, isDeleted: { $ne: true } })
+            .select("_id name").sort({ name: 1 }).limit(12).lean();
+        const matchedSvc = matchServiceFromText(text, services);
+        if (matchedSvc) {
+            ctx = { ...ctx, serviceId: matchedSvc._id.toString(), serviceName: matchedSvc.name };
+        } else {
+            return {
+                answer: "Bạn muốn đặt lịch cho dịch vụ nào? Vui lòng chọn một dịch vụ bên dưới:",
+                sources: [],
+                uiState: "done",
+                quickReplies: services.map((s) => ({
+                    label: s.name, value: s.name,
+                    bookingData: { serviceId: s._id.toString(), serviceName: s.name, step: "date_select" },
+                })),
+                bookingAssist: { step: "service_select" },
+            };
+        }
+    }
+
+    // Step 2: No date selected yet
+    if (!ctx.date) {
+        const parsedDate = parseDateForBooking(text);
+        if (parsedDate) {
+            ctx = { ...ctx, date: parsedDate };
+        } else {
+            const page = ctx.datePage || 0;
+            return {
+                answer: `Dịch vụ **${ctx.serviceName}** đã được chọn. Bạn muốn đặt khám vào ngày nào?\n_Hoặc gõ ngày cụ thể (vd: 28/05, thứ 2 tuần sau)_`,
+                sources: [],
+                uiState: "done",
+                quickReplies: generateDateQuickReplies(page),
+                bookingAssist: { step: "date_select", ...ctx },
+            };
+        }
+    }
+
+    // Step 3: No doctor/slot selected yet — try text match, else show paginated list
+    if (!ctx.doctorId || !ctx.startTime) {
+        const allSlots = await getAvailableSlotsForBooking(ctx.date, ctx.serviceId);
+
+        if (allSlots.length === 0) {
+            return {
+                answer: `Rất tiếc, không có lịch trống nào cho dịch vụ **${ctx.serviceName}** vào **${formatDateVN(ctx.date)}**. Bạn muốn chọn ngày khác không?`,
+                sources: [],
+                uiState: "done",
+                quickReplies: [
+                    { label: "Chọn ngày khác", value: "Chọn ngày khác", bookingData: { date: null, slotPage: null, step: "date_select" } },
+                    { label: "Bắt đầu lại", value: "Tôi muốn đặt lịch", bookingData: { reset: true } },
+                ],
+                bookingAssist: { step: "doctor_select", ...ctx, availableSlots: [] },
+            };
+        }
+
+        const matchedSlot = matchSlotFromText(text, allSlots);
+        if (matchedSlot) {
+            ctx = { ...ctx, doctorId: matchedSlot.doctorId, doctorName: matchedSlot.doctorName, startTime: matchedSlot.time };
+        } else {
+            // Apply time filter if user hinted a time but multiple doctors match
+            const timeHint = parseTimeForBooking(text);
+            let displaySlots = allSlots;
+            if (timeHint) {
+                const filtered = allSlots.filter((s) => s.time === timeHint);
+                if (filtered.length > 0) displaySlots = filtered;
+            }
+
+            const page = ctx.slotPage || 0;
+            const total = displaySlots.length;
+            const pageSlots = displaySlots.slice(page * SLOTS_PER_PAGE, (page + 1) * SLOTS_PER_PAGE);
+            const remaining = total - (page + 1) * SLOTS_PER_PAGE;
+            const totalPages = Math.ceil(total / SLOTS_PER_PAGE);
+
+            const quickReplies = pageSlots.map((slot) => ({
+                label: `BS. ${slot.doctorName} - ${slot.time}`,
+                value: `BS. ${slot.doctorName} - ${slot.time}`,
+                bookingData: { doctorId: slot.doctorId, doctorName: slot.doctorName, startTime: slot.time, step: "confirm" },
+            }));
+            if (remaining > 0) {
+                quickReplies.push({ label: `Xem thêm (${remaining} slot còn lại)`, value: "Xem thêm", bookingData: { slotPage: page + 1, step: "doctor_select" } });
+            }
+            if (page > 0) {
+                quickReplies.push({ label: "← Trang trước", value: "Trang trước", bookingData: { slotPage: page - 1, step: "doctor_select" } });
+            }
+
+            const pageInfo = total > SLOTS_PER_PAGE ? ` (trang ${page + 1}/${totalPages})` : "";
+            return {
+                answer: `Các lịch trống cho dịch vụ **${ctx.serviceName}** vào **${formatDateVN(ctx.date)}**${pageInfo}:`,
+                sources: [],
+                uiState: "done",
+                quickReplies,
+                bookingAssist: { step: "doctor_select", ...ctx },
+            };
+        }
+    }
+
+    // Step 4: All info collected — show booking summary
+    const params = new URLSearchParams({ serviceId: ctx.serviceId, doctorId: ctx.doctorId, date: ctx.date, time: ctx.startTime });
+    const bookingUrl = `/patient/book?${params}`;
+    const loginUrl = `/auth/login?returnUrl=${encodeURIComponent(`/patient/book?${params}`)}`;
+
+    return {
+        answer: [
+            `**Tóm tắt lịch hẹn:**`,
+            `- Dịch vụ: **${ctx.serviceName}**`,
+            `- Bác sĩ: **BS. ${ctx.doctorName}**`,
+            `- Ngày: **${formatDateVN(ctx.date)}**`,
+            `- Giờ: **${ctx.startTime}**`,
+            ``,
+            isAuthenticated
+                ? `Nhấn **"Đặt lịch ngay"** để chuyển đến trang xác nhận.`
+                : `Vui lòng đăng nhập để tiến hành đặt lịch.`,
+        ].join("\n"),
+        sources: [],
+        uiState: "done",
+        quickReplies: [
+            isAuthenticated
+                ? { label: "Đặt lịch ngay", value: "Đặt lịch ngay", action: "booking", url: bookingUrl }
+                : { label: "Đăng nhập để đặt lịch", value: "Đăng nhập", url: loginUrl },
+            { label: "Bắt đầu lại", value: "Tôi muốn đặt lịch", bookingData: { reset: true } },
+        ],
+        bookingAssist: { step: "confirm", ...ctx, bookingUrl },
+    };
 };
 
 const buildBookingQuickReplies = (bookingUrl) => [
@@ -293,7 +652,7 @@ const buildServiceContext = async () => {
     const services = await Service.find({ isActive: true, isDeleted: { $ne: true } })
         .select("name description price duration category")
         .sort({ category: 1, name: 1 })
-        .limit(12)
+        .limit(30)
         .lean();
     if (services.length === 0) return "";
 
@@ -477,12 +836,19 @@ const checkPublicRateLimit = (req, res) => {
 
 export const sendMessage = async (req, res, next) => {
     try {
-        const { message } = req.body;
+        const { message, bookingContext } = req.body;
         if (!validateMessage(message)) {
             return res.status(400).json({ success: false, message: "Tin nhắn không được để trống" });
         }
 
         const session = await getOrCreateSession(req.user.id);
+
+        if (classifyChatIntent(message, bookingContext).intent === "BOOKING_FLOW") {
+            const result = normalizeChatResult(await conductBookingFlow(message, bookingContext, true));
+            await appendSessionMessages(session, message, result.answer);
+            return apiResponse(res, 200, "AI response generated", { ...result, sessionId: session._id });
+        }
+
         const userContext = await buildUserContext(req.user.id);
         const result = normalizeChatResult(await resolveChatResult(message, session.messages, userContext));
 
@@ -499,11 +865,16 @@ export const sendMessage = async (req, res, next) => {
 
 export const sendPublicMessage = async (req, res, next) => {
     try {
-        const { message, history } = req.body;
+        const { message, history, bookingContext } = req.body;
         if (!validateMessage(message)) {
             return res.status(400).json({ success: false, message: "Tin nhắn không được để trống" });
         }
         if (!checkPublicRateLimit(req, res)) return;
+
+        if (classifyChatIntent(message, bookingContext).intent === "BOOKING_FLOW") {
+            const result = normalizeChatResult(await conductBookingFlow(message, bookingContext, false));
+            return apiResponse(res, 200, "AI response generated", result);
+        }
 
         const result = normalizeChatResult(await resolveChatResult(message, normalizePublicHistory(history)));
         return apiResponse(res, 200, "AI response generated", result);
@@ -525,14 +896,23 @@ const prepareSseResponse = (res) => {
 
 export const streamMessage = async (req, res, next) => {
     try {
-        const { message } = req.body;
+        const { message, bookingContext } = req.body;
         if (!validateMessage(message)) {
             return res.status(400).json({ success: false, message: "Tin nhắn không được để trống" });
         }
 
         const session = await getOrCreateSession(req.user.id);
-        const userContext = await buildUserContext(req.user.id);
         prepareSseResponse(res);
+
+        if (classifyChatIntent(message, bookingContext).intent === "BOOKING_FLOW") {
+            const result = normalizeChatResult(await conductBookingFlow(message, bookingContext, true));
+            await appendSessionMessages(session, message, result.answer);
+            sendSse(res, { type: "token", token: result.answer });
+            sendSse(res, { type: "done", ...result, sessionId: session._id });
+            return res.end();
+        }
+
+        const userContext = await buildUserContext(req.user.id);
 
         const onEvent = async (event) => sendSse(res, event);
         const rawResult = await resolveChatResult(message, session.messages, userContext, onEvent);
@@ -556,13 +936,21 @@ export const streamMessage = async (req, res, next) => {
 
 export const streamPublicMessage = async (req, res, next) => {
     try {
-        const { message, history } = req.body;
+        const { message, history, bookingContext } = req.body;
         if (!validateMessage(message)) {
             return res.status(400).json({ success: false, message: "Tin nhắn không được để trống" });
         }
         if (!checkPublicRateLimit(req, res)) return;
 
         prepareSseResponse(res);
+
+        if (classifyChatIntent(message, bookingContext).intent === "BOOKING_FLOW") {
+            const result = normalizeChatResult(await conductBookingFlow(message, bookingContext, false));
+            sendSse(res, { type: "token", token: result.answer });
+            sendSse(res, { type: "done", ...result });
+            return res.end();
+        }
+
         const onEvent = async (event) => sendSse(res, event);
         const rawResult = await resolveChatResult(message, normalizePublicHistory(history), "", onEvent);
         const result = normalizeChatResult(rawResult);

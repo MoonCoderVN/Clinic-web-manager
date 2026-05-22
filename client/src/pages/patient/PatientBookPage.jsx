@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useState, useCallback, useMemo } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -84,6 +84,7 @@ const ServiceImage = ({ service }) => {
 
 export default function PatientBookPage() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const refreshKey = useRealtimeRefresh([
     "service:changed",
     "doctor:changed",
@@ -102,13 +103,13 @@ export default function PatientBookPage() {
   const [servicesLoading, setServicesLoading] = useState(true);
   const [slotsLoading, setSlotsLoading] = useState(false);
   const [slotsError, setSlotsError] = useState("");
-  const [formData, setFormData] = useState({
-    serviceId: "",
-    doctorId: "",
-    date: "",
-    time: "",
+  const [formData, setFormData] = useState(() => ({
+    serviceId: searchParams.get("serviceId") || "",
+    doctorId: searchParams.get("doctorId") || "",
+    date: searchParams.get("date") || "",
+    time: searchParams.get("time") || "",
     notes: "",
-  });
+  }));
 
   const selectedService = services.find((service) => service._id === formData.serviceId);
   const selectedDoctor = doctors.find((doctor) => doctor._id?.toString() === formData.doctorId?.toString());
@@ -138,6 +139,20 @@ export default function PatientBookPage() {
       return normalizeText([name, spec, doctor.userId?.email, doctor.phone].join(" ")).includes(query);
     });
   }, [availableDoctorsForTime, doctorSearch]);
+
+  // Auto-advance step when pre-filled from chatbot URL params
+  useEffect(() => {
+    const preServiceId = searchParams.get("serviceId");
+    const preDoctorId = searchParams.get("doctorId");
+    const preDate = searchParams.get("date");
+    const preTime = searchParams.get("time");
+    if (!preServiceId) return;
+    if (preServiceId && preDoctorId && preDate && preTime) setStep(4);
+    else if (preServiceId && preDate && preTime) setStep(3);
+    else if (preServiceId && preDate) setStep(2);
+    else setStep(2);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     const fetchServices = async () => {

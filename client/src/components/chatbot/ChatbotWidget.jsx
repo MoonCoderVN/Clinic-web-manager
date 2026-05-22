@@ -10,7 +10,7 @@ import axiosInstance from "@/api/httpClient";
 import { renderMarkdownText } from "@/utils/renderMarkdownText";
 
 const suggestedQuestions = [
-  "Nhổ răng có đau không?",
+  "Tôi muốn đặt lịch khám",
   "Chi phí niềng răng?",
   "Bác sĩ nào sáng thứ 2 có lịch?",
 ];
@@ -32,12 +32,12 @@ const streamStatusText = {
 
 const getApiUrl = (path) => `${axiosInstance.defaults.baseURL || ""}${path}`;
 
-async function readChatStream(path, message, history = [], handlers = {}, signal) {
+async function readChatStream(path, message, history = [], handlers = {}, signal, bookingContext = null, extraHeaders = {}) {
   const response = await fetch(getApiUrl(path), {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...extraHeaders },
     credentials: "include",
-    body: JSON.stringify({ message, history }),
+    body: JSON.stringify({ message, history, ...(bookingContext ? { bookingContext } : {}) }),
     signal,
   });
   if (!response.ok || !response.body) throw new Error("STREAM_UNAVAILABLE");
@@ -75,6 +75,7 @@ export default function ChatbotWidget() {
   const [input, setInput] = useState("");
   const [isTyping, setIsTyping] = useState(false);
   const [uiState, setUiState] = useState("retrieving");
+  const [bookingContext, setBookingContext] = useState(null);
   const scrollRef = useRef(null);
   const inputRef = useRef(null);
   const activeRequestRef = useRef(null);
@@ -104,10 +105,11 @@ export default function ChatbotWidget() {
       .map((message) => ({ role: message.role, content: message.content }))
       .slice(-6);
 
-  const handleSend = async (text) => {
+  const handleSend = async (text, overrideBookingContext) => {
     const messageText = text || input.trim();
     if (!messageText || isTyping) return;
     const history = buildPublicHistory();
+    const activeBookingContext = overrideBookingContext !== undefined ? overrideBookingContext : bookingContext;
 
     const requestId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const assistantId = `${requestId}-assistant`;
@@ -126,9 +128,14 @@ export default function ChatbotWidget() {
     setUiState("retrieving");
 
     try {
+      const token = localStorage.getItem("token");
+      const streamPath = token ? "/chat/stream" : "/chat/public/stream";
+      const fallbackPath = token ? "/chat" : "/chat/public";
+      const authHeaders = token ? { Authorization: `Bearer ${token}` } : {};
+
       let hasStreamToken = false;
       try {
-        await readChatStream("/chat/public/stream", messageText, history, {
+        await readChatStream(streamPath, messageText, history, {
           onState: (state) => {
             if (activeRequestRef.current === requestId) setUiState(state);
           },
@@ -143,6 +150,8 @@ export default function ChatbotWidget() {
           },
           onDone: (event) => {
             if (activeRequestRef.current !== requestId) return;
+            // Reset booking context when server responds with no booking step
+            if (!event.bookingAssist?.step) setBookingContext(null);
             updateAssistant(assistantId, (item) => {
               const currentContent = item.content || "";
               const finalAnswer = event.answer || "";
@@ -156,14 +165,15 @@ export default function ChatbotWidget() {
               };
             });
           },
-        }, controller.signal);
+        }, controller.signal, activeBookingContext, authHeaders);
       } catch (streamError) {
         if (hasStreamToken) {
           throw streamError;
         }
-        const res = await axiosInstance.post("/chat/public", { message: messageText, history });
+        const res = await axiosInstance.post(fallbackPath, { message: messageText, history, ...(activeBookingContext ? { bookingContext: activeBookingContext } : {}) });
         const data = res.data?.data || res.data || {};
         if (activeRequestRef.current !== requestId) return;
+        if (!data.bookingAssist?.step) setBookingContext(null);
         updateAssistant(assistantId, (item) => ({
           ...item,
           content: data.answer || "Xin lỗi, tôi chưa nhận được phản hồi.",
@@ -185,6 +195,24 @@ export default function ChatbotWidget() {
         setUiState("retrieving");
         streamAbortRef.current = null;
       }
+    }
+  };
+
+  const handleQuickReply = (reply) => {
+    let nextBookingContext = bookingContext;
+    if (reply.bookingData) {
+      if (reply.bookingData.reset) {
+        nextBookingContext = null;
+        setBookingContext(null);
+      } else {
+        nextBookingContext = { ...(bookingContext || {}), ...reply.bookingData };
+        setBookingContext(nextBookingContext);
+      }
+    }
+    if (reply.url) {
+      window.location.assign(reply.url);
+    } else {
+      handleSend(reply.value || reply.label, nextBookingContext);
     }
   };
 
@@ -273,10 +301,10 @@ export default function ChatbotWidget() {
                       )}
                       {message.role === "assistant" && message.quickReplies?.length > 0 && (
                         <div className="mt-3 flex flex-wrap gap-2 border-t border-border/60 pt-2">
-                          {message.quickReplies.slice(0, 3).map((reply, index) => (
+                          {message.quickReplies.slice(0, 8).map((reply, index) => (
                             <button
                               key={`${reply.label}-${index}`}
-                              onClick={() => reply.url ? window.location.assign(reply.url) : handleSend(reply.value || reply.label)}
+                              onClick={() => handleQuickReply(reply)}
                               disabled={isTyping}
                               className="rounded-full border bg-background px-3 py-1 text-[11px] font-medium text-foreground transition-colors hover:bg-primary hover:text-primary-foreground disabled:opacity-50"
                             >
