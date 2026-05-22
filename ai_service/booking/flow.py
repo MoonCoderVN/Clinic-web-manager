@@ -63,9 +63,20 @@ def _parse_date_from_text(text: str) -> str | None:
 
 
 def _parse_time_from_text(text: str) -> str | None:
-    m = re.search(r"\b(\d{1,2})[h:]\s*(\d{0,2})\b", text)
+    # Thử format HH:MM trước (vd: 14:00, 9:30)
+    m = re.search(r"\b(\d{1,2}):(\d{2})\b", text)
     if m:
-        h, mn = int(m.group(1)), int(m.group(2) or 0)
+        h, mn = int(m.group(1)), int(m.group(2))
+        if 0 <= h <= 23:
+            return f"{h:02d}:{mn:02d}"
+    # Thử "Xh[MM]" hoặc "X giờ [MM]" — có thể có space trước h/gio
+    m = re.search(r"\b(\d{1,2})\s*(?:h|gio)\s*(\d{0,2})", text)
+    if m:
+        h = int(m.group(1))
+        mn = int(m.group(2) or 0)
+        # Quy đổi chiều/tối → +12 giờ (chieu/toi sau khi normalize)
+        if re.search(r"\b(chieu|toi)\b", text) and h < 12:
+            h += 12
         if 0 <= h <= 23:
             return f"{h:02d}:{mn:02d}"
     return None
@@ -229,7 +240,7 @@ async def conduct_booking_flow(message: str, ctx: dict | None, is_authenticated:
                     "value": t,
                     "bookingData": {"startTime": t, "step": "doctor_select"},
                 }
-                for t in unique_times[:8]
+                for t in unique_times[:12]
             ]
             return {
                 "answer": (

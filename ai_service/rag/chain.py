@@ -98,7 +98,7 @@ def _build_quick_replies(query: str) -> list[dict]:
         return [
             {"label": "Tư vấn dịch vụ", "value": "Tư vấn giúp tôi nên chọn dịch vụ nha khoa nào"},
             {"label": "Xem bảng giá", "value": "Cho tôi xem bảng giá dịch vụ"},
-            {"label": "Đặt lịch ngay", "value": "Tôi muốn đặt lịch khám"},
+            {"label": "Tư vấn thêm", "value": "Tôi muốn được tư vấn thêm thông tin"},
         ]
     if re.search(r"gia|chi phi|implant|nieng|e-max|emax", text):
         return [
@@ -109,7 +109,7 @@ def _build_quick_replies(query: str) -> list[dict]:
     return [
         {"label": "Tư vấn dịch vụ", "value": "Tư vấn giúp tôi nên chọn dịch vụ nha khoa nào"},
         {"label": "Xem bảng giá", "value": "Cho tôi xem bảng giá dịch vụ"},
-        {"label": "Đặt lịch khám", "value": "Tôi muốn đặt lịch khám"},
+        {"label": "Tư vấn thêm", "value": "Tôi cần tư vấn thêm thông tin"},
     ]
 
 

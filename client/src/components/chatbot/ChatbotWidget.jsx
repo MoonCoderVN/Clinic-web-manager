@@ -150,8 +150,12 @@ export default function ChatbotWidget() {
           },
           onDone: (event) => {
             if (activeRequestRef.current !== requestId) return;
-            // Reset booking context when server responds with no booking step
-            if (!event.bookingAssist?.step) setBookingContext(null);
+            // Sync bookingContext with server's returned bookingAssist state
+            if (event.bookingAssist?.step) {
+              setBookingContext(event.bookingAssist);
+            } else {
+              setBookingContext(null);
+            }
             updateAssistant(assistantId, (item) => {
               const currentContent = item.content || "";
               const finalAnswer = event.answer || "";
@@ -173,7 +177,11 @@ export default function ChatbotWidget() {
         const res = await axiosInstance.post(fallbackPath, { message: messageText, history, ...(activeBookingContext ? { bookingContext: activeBookingContext } : {}) });
         const data = res.data?.data || res.data || {};
         if (activeRequestRef.current !== requestId) return;
-        if (!data.bookingAssist?.step) setBookingContext(null);
+        if (data.bookingAssist?.step) {
+          setBookingContext(data.bookingAssist);
+        } else {
+          setBookingContext(null);
+        }
         updateAssistant(assistantId, (item) => ({
           ...item,
           content: data.answer || "Xin lỗi, tôi chưa nhận được phản hồi.",
@@ -342,7 +350,7 @@ export default function ChatbotWidget() {
                       )}
                       {message.role === "assistant" && message.quickReplies?.length > 0 && (
                         <div className="mt-3 flex flex-wrap gap-2 border-t border-border/60 pt-2">
-                          {message.quickReplies.slice(0, 8).map((reply, index) => (
+                          {message.quickReplies.slice(0, 12).map((reply, index) => (
                             <button
                               key={`${reply.label}-${index}`}
                               onClick={() => handleQuickReply(reply)}

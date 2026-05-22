@@ -266,10 +266,19 @@ const parseDateForBooking = (message = "") => {
 
 const parseTimeForBooking = (message = "") => {
     const text = normalizeText(message);
-    const m = text.match(/\b(\d{1,2})[h:]\s*(\d{0,2})\b/);
-    if (m) {
-        const h = Number(m[1]);
-        const mn = Number(m[2] || 0);
+    // Thử HH:MM trước (vd: 14:00, 9:30)
+    const mColon = text.match(/\b(\d{1,2}):(\d{2})\b/);
+    if (mColon) {
+        const h = Number(mColon[1]);
+        const mn = Number(mColon[2]);
+        if (h >= 0 && h <= 23) return `${String(h).padStart(2, "0")}:${String(mn).padStart(2, "0")}`;
+    }
+    // Thử "Xh[MM]" hoặc "X gio [MM]" với chiều/tối
+    const mHour = text.match(/\b(\d{1,2})\s*(?:h|gio)\s*(\d{0,2})/);
+    if (mHour) {
+        let h = Number(mHour[1]);
+        const mn = Number(mHour[2] || 0);
+        if (/\b(chieu|toi)\b/.test(text) && h < 12) h += 12;
         if (h >= 0 && h <= 23) return `${String(h).padStart(2, "0")}:${String(mn).padStart(2, "0")}`;
     }
     return null;
@@ -460,7 +469,7 @@ const conductBookingFlow = async (message, bookingContext, isAuthenticated) => {
         if (timeHint && seen.has(timeHint)) {
             ctx = { ...ctx, startTime: timeHint };
         } else {
-            const quickReplies = uniqueTimes.slice(0, 8).map((t) => ({
+            const quickReplies = uniqueTimes.slice(0, 12).map((t) => ({
                 label: t,
                 value: t,
                 bookingData: { startTime: t, step: "doctor_select" },
