@@ -51,7 +51,7 @@ const hasTimePeriodSignal = (text = "") =>
     /(sang|buoi sang|chieu|buoi chieu|toi|buoi toi|morning|afternoon|evening)/.test(text);
 
 const hasBookingFlowSignal = (text = "") =>
-    /(muon dat|muon hen|cho toi dat|can dat lich|dat lich kham|ho tro dat|tu van dat lich|dang ky kham|dang ky lich|can kham|giup toi dat|huong dan dat|bat dau dat)/.test(text);
+    /(muon dat|muon hen|cho.*dat|can dat lich|dat lich kham|ho tro dat|tu van dat lich|dang ky kham|dang ky lich|can kham|giup.*dat|huong dan dat|bat dau dat)/.test(text);
 
 const classifyChatIntent = (message = "", bookingContext = null) => {
     const text = normalizeText(message);
@@ -70,7 +70,14 @@ const classifyChatIntent = (message = "", bookingContext = null) => {
     const hasSpecificEntities = specificDate || specificPeriod || doctorNameHint;
 
     // Explicit booking flow start (without a specific doctor name or date already provided)
-    if (hasBookingFlowSignal(text) && !doctorNameHint && !specificDate) {
+    if (hasBookingFlowSignal(text) && !doctorNameHint) {
+        return { intent: "BOOKING_FLOW", wantsDoctorInfo, wantsServiceInfo, bookingAction: true, hasSpecificEntities: false };
+    }
+
+    // Fallback: booking intent không có entity cụ thể → bắt đầu wizard thu thập thông tin
+    // Bắt các câu như "Giúp mình đặt lịch", "Mình cần đặt khám", "Còn slot không?"
+    // Mirror Python: ai_service/intent/classifier.py
+    if (bookingAction && !hasSpecificEntities && !doctorNameHint) {
         return { intent: "BOOKING_FLOW", wantsDoctorInfo, wantsServiceInfo, bookingAction: true, hasSpecificEntities: false };
     }
 

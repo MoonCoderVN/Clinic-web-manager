@@ -242,7 +242,7 @@ const buildQuickReplies = (query = "") => {
     return [
         { label: "Tư vấn dịch vụ", value: "Tư vấn giúp tôi nên chọn dịch vụ nha khoa nào" },
         { label: "Xem bảng giá", value: "Cho tôi xem bảng giá dịch vụ" },
-        { label: "Tư vấn thêm", value: "Tư vấn thêm về chăm sóc răng miệng" },
+        { label: "Tư vấn thêm", value: "Tôi cần tư vấn thêm thông tin" },
     ];
 };
 

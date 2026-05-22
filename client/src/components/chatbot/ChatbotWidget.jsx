@@ -25,6 +25,7 @@ const initialMessages = [
 ];
 
 const streamStatusText = {
+  idle: "AI đang xử lý...",
   retrieving: "AI đang tìm trong dữ liệu phòng khám...",
   checking_availability: "AI đang kiểm tra lịch trống...",
   generating: "AI đang soạn câu trả lời...",
@@ -125,7 +126,7 @@ export default function ChatbotWidget() {
     ]);
     setInput("");
     setIsTyping(true);
-    setUiState("retrieving");
+    setUiState("idle");
 
     try {
       const token = localStorage.getItem("token");
