@@ -198,7 +198,48 @@ export default function ChatbotWidget() {
     }
   };
 
-  const handleQuickReply = (reply) => {
+  const handleQuickReply = async (reply) => {
+    // Direct appointment creation from confirm step
+    if (reply.action === "create_booking") {
+      setIsTyping(true);
+      try {
+        await axiosInstance.post("/appointments", {
+          serviceId: bookingContext?.serviceId,
+          doctorId: bookingContext?.doctorId,
+          appointmentDate: bookingContext?.date,
+          startTime: bookingContext?.startTime,
+        });
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: `booking-success-${Date.now()}`,
+            role: "assistant",
+            content: "✅ **Đặt lịch thành công!** Đang chuyển đến trang lịch hẹn...",
+            quickReplies: [{ label: "Xem lịch hẹn", value: "", url: "/patient/appointments" }],
+          },
+        ]);
+        setBookingContext(null);
+        setTimeout(() => { window.location.href = "/patient/appointments"; }, 1800);
+      } catch (err) {
+        const msg = err.response?.data?.message || "Có lỗi xảy ra. Vui lòng thử lại.";
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: `booking-error-${Date.now()}`,
+            role: "assistant",
+            content: `❌ **Đặt lịch thất bại:** ${msg}`,
+            quickReplies: [
+              { label: "Thử lại", value: "Xác nhận", action: "create_booking" },
+              { label: "Bắt đầu lại", value: "Tôi muốn đặt lịch", bookingData: { reset: true } },
+            ],
+          },
+        ]);
+      } finally {
+        setIsTyping(false);
+      }
+      return;
+    }
+
     let nextBookingContext = bookingContext;
     if (reply.bookingData) {
       if (reply.bookingData.reset) {

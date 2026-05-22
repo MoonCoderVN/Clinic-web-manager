@@ -1,11 +1,10 @@
 import re
 import unicodedata
 from datetime import date, timedelta
-from urllib.parse import urlencode, quote
+from urllib.parse import quote
 from db.mongo import service_col
 from booking.slots import get_available_slots_for_booking
 
-_SLOTS_PER_PAGE = 6
 _DATE_PAGE_SIZE = 5
 _DATE_MAX_PAGE = 3
 
@@ -113,7 +112,7 @@ def _generate_date_options(page: int = 0) -> list[dict]:
         options.append({
             "label": f"{label} ({short})",
             "value": f"{label} ({short})",
-            "bookingData": {"date": d.strftime("%Y-%m-%d"), "step": "doctor_select"},
+            "bookingData": {"date": d.strftime("%Y-%m-%d"), "step": "time_select"},
         })
     if page < _DATE_MAX_PAGE:
         options.append({
@@ -192,8 +191,8 @@ async def conduct_booking_flow(message: str, ctx: dict | None, is_authenticated:
                 "bookingAssist": {"step": "date_select", **ctx},
             }
 
-    # Step 3: No doctor/slot selected — try text match first, else show paginated list
-    if not ctx.get("doctorId") or not ctx.get("startTime"):
+    # Step 3: No time selected — show available time slots
+    if not ctx.get("startTime"):
         all_slots = await get_available_slots_for_booking(ctx["date"], ctx["serviceId"])
 
         if not all_slots:
@@ -205,74 +204,90 @@ async def conduct_booking_flow(message: str, ctx: dict | None, is_authenticated:
                 "sources": [],
                 "uiState": "done",
                 "quickReplies": [
-                    {"label": "Chọn ngày khác", "value": "Chọn ngày khác", "bookingData": {"date": None, "slotPage": None, "step": "date_select"}},
+                    {"label": "Chọn ngày khác", "value": "Chọn ngày khác", "bookingData": {"date": None, "step": "date_select"}},
                     {"label": "Bắt đầu lại", "value": "Tôi muốn đặt lịch", "bookingData": {"reset": True}},
                 ],
-                "bookingAssist": {"step": "doctor_select", **ctx, "availableSlots": []},
+                "bookingAssist": {"step": "time_select", **ctx},
             }
 
-        matched_slot = _match_slot_from_text(text, all_slots)
-        if matched_slot:
-            ctx = {**ctx, "doctorId": matched_slot["doctorId"], "doctorName": matched_slot["doctorName"], "startTime": matched_slot["time"]}
+        # Deduplicate times while preserving order
+        seen: set[str] = set()
+        unique_times: list[str] = []
+        for s in all_slots:
+            if s["time"] not in seen:
+                seen.add(s["time"])
+                unique_times.append(s["time"])
+
+        # Free-text: user typed a time like "8h"
+        time_hint = _parse_time_from_text(text)
+        if time_hint and time_hint in seen:
+            ctx = {**ctx, "startTime": time_hint}
         else:
-            # Apply time filter if user hinted a time (e.g. "8h") but multiple doctors match
-            time_hint = _parse_time_from_text(text)
-            display_slots = all_slots
-            if time_hint:
-                filtered = [s for s in all_slots if s["time"] == time_hint]
-                if filtered:
-                    display_slots = filtered
+            quick_replies = [
+                {
+                    "label": t,
+                    "value": t,
+                    "bookingData": {"startTime": t, "step": "doctor_select"},
+                }
+                for t in unique_times[:8]
+            ]
+            return {
+                "answer": (
+                    f"Chọn giờ khám vào **{_format_date_vn(ctx['date'])}**:\n"
+                    "_Hoặc gõ giờ cụ thể (vd: 8h, 14:30)_"
+                ),
+                "sources": [],
+                "uiState": "done",
+                "quickReplies": quick_replies,
+                "bookingAssist": {"step": "time_select", **ctx},
+            }
 
-            page = ctx.get("slotPage") or 0
-            total = len(display_slots)
-            page_slots = display_slots[page * _SLOTS_PER_PAGE: (page + 1) * _SLOTS_PER_PAGE]
-            remaining = total - (page + 1) * _SLOTS_PER_PAGE
+    # Step 4: No doctor selected — filter by chosen time, show doctors
+    if not ctx.get("doctorId"):
+        all_slots = await get_available_slots_for_booking(ctx["date"], ctx["serviceId"])
+        time_slots = [s for s in all_slots if s["time"] == ctx["startTime"]]
 
+        if not time_slots:
+            return {
+                "answer": (
+                    f"Rất tiếc, không còn lịch trống lúc **{ctx['startTime']}** "
+                    f"ngày **{_format_date_vn(ctx['date'])}**. Bạn muốn chọn giờ khác không?"
+                ),
+                "sources": [],
+                "uiState": "done",
+                "quickReplies": [
+                    {"label": "Chọn giờ khác", "value": "Chọn giờ khác", "bookingData": {"startTime": None, "step": "time_select"}},
+                    {"label": "Bắt đầu lại", "value": "Tôi muốn đặt lịch", "bookingData": {"reset": True}},
+                ],
+                "bookingAssist": {"step": "doctor_select", **ctx},
+            }
+
+        matched_slot = _match_slot_from_text(text, time_slots)
+        if matched_slot:
+            ctx = {**ctx, "doctorId": matched_slot["doctorId"], "doctorName": matched_slot["doctorName"]}
+        else:
             quick_replies: list[dict] = [
                 {
-                    "label": f"BS. {s['doctorName']} - {s['time']}",
-                    "value": f"BS. {s['doctorName']} - {s['time']}",
+                    "label": f"BS. {s['doctorName']}",
+                    "value": f"BS. {s['doctorName']}",
                     "bookingData": {
                         "doctorId": s["doctorId"],
                         "doctorName": s["doctorName"],
-                        "startTime": s["time"],
                         "step": "confirm",
                     },
                 }
-                for s in page_slots
+                for s in time_slots
             ]
-
-            if remaining > 0:
-                quick_replies.append({
-                    "label": f"Xem thêm ({remaining} slot còn lại)",
-                    "value": "Xem thêm",
-                    "bookingData": {"slotPage": page + 1, "step": "doctor_select"},
-                })
-            if page > 0:
-                quick_replies.append({
-                    "label": "← Trang trước",
-                    "value": "Trang trước",
-                    "bookingData": {"slotPage": page - 1, "step": "doctor_select"},
-                })
-
-            page_info = f" (trang {page + 1}/{-(-total // _SLOTS_PER_PAGE)})" if total > _SLOTS_PER_PAGE else ""
             return {
-                "answer": f"Các lịch trống cho dịch vụ **{ctx.get('serviceName', '')}** vào **{_format_date_vn(ctx['date'])}**{page_info}:",
+                "answer": f"Chọn bác sĩ khám lúc **{ctx['startTime']}** ngày **{_format_date_vn(ctx['date'])}**:",
                 "sources": [],
                 "uiState": "done",
                 "quickReplies": quick_replies,
                 "bookingAssist": {"step": "doctor_select", **ctx},
             }
 
-    # Step 4: Confirm booking
-    params = urlencode({
-        "serviceId": ctx["serviceId"],
-        "doctorId": ctx["doctorId"],
-        "date": ctx["date"],
-        "time": ctx["startTime"],
-    })
-    booking_url = f"/patient/book?{params}"
-    login_url = f"/auth/login?returnUrl={quote(booking_url, safe='')}"
+    # Step 5: Confirm booking
+    login_url = f"/auth/login?returnUrl={quote('/patient/appointments', safe='')}"
 
     answer_lines = [
         "**Tóm tắt lịch hẹn:**",
@@ -281,7 +296,7 @@ async def conduct_booking_flow(message: str, ctx: dict | None, is_authenticated:
         f"- Ngày: **{_format_date_vn(ctx['date'])}**",
         f"- Giờ: **{ctx.get('startTime', '')}**",
         "",
-        'Nhấn **"Đặt lịch ngay"** để chuyển đến trang xác nhận.' if is_authenticated else "Vui lòng đăng nhập để tiến hành đặt lịch.",
+        'Nhấn **"Xác nhận đặt lịch"** để hoàn tất.' if is_authenticated else "Vui lòng đăng nhập để tiến hành đặt lịch.",
     ]
 
     return {
@@ -290,11 +305,11 @@ async def conduct_booking_flow(message: str, ctx: dict | None, is_authenticated:
         "uiState": "done",
         "quickReplies": [
             (
-                {"label": "Đặt lịch ngay", "value": "Đặt lịch ngay", "action": "booking", "url": booking_url}
+                {"label": "Xác nhận đặt lịch", "value": "Xác nhận", "action": "create_booking"}
                 if is_authenticated
                 else {"label": "Đăng nhập để đặt lịch", "value": "Đăng nhập", "url": login_url}
             ),
             {"label": "Bắt đầu lại", "value": "Tôi muốn đặt lịch", "bookingData": {"reset": True}},
         ],
-        "bookingAssist": {"step": "confirm", **ctx, "bookingUrl": booking_url},
+        "bookingAssist": {"step": "confirm", **ctx},
     }
