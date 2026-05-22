@@ -103,6 +103,7 @@ export default function PatientBookPage() {
   const [servicesLoading, setServicesLoading] = useState(true);
   const [slotsLoading, setSlotsLoading] = useState(false);
   const [slotsError, setSlotsError] = useState("");
+  const [doctorsLoading, setDoctorsLoading] = useState(false);
   const [formData, setFormData] = useState(() => ({
     serviceId: searchParams.get("serviceId") || "",
     doctorId: searchParams.get("doctorId") || "",
@@ -126,19 +127,15 @@ export default function PatientBookPage() {
     );
   }, [services, serviceSearch]);
 
-  const slotForSelectedTime = availableSlots.find((slot) => slot.time === formData.time);
-  const availableDoctorIds = slotForSelectedTime?.doctors || [];
-  const availableDoctorsForTime = doctors.filter((doctor) => availableDoctorIds.includes(doctor._id?.toString()));
-
   const filteredDoctors = useMemo(() => {
     const query = normalizeText(doctorSearch);
-    if (!query) return availableDoctorsForTime;
-    return availableDoctorsForTime.filter((doctor) => {
+    if (!query) return doctors;
+    return doctors.filter((doctor) => {
       const name = doctor.userId?.fullName || doctor.name || "";
       const spec = doctor.specialization || doctor.specialty || "";
       return normalizeText([name, spec, doctor.userId?.email, doctor.phone].join(" ")).includes(query);
     });
-  }, [availableDoctorsForTime, doctorSearch]);
+  }, [doctors, doctorSearch]);
 
   // Auto-advance step when pre-filled from chatbot URL params
   useEffect(() => {
@@ -148,8 +145,7 @@ export default function PatientBookPage() {
     const preTime = searchParams.get("time");
     if (!preServiceId) return;
     if (preServiceId && preDoctorId && preDate && preTime) setStep(4);
-    else if (preServiceId && preDate && preTime) setStep(3);
-    else if (preServiceId && preDate) setStep(2);
+    else if (preServiceId && preDoctorId) setStep(3);
     else setStep(2);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -170,18 +166,31 @@ export default function PatientBookPage() {
     fetchServices();
   }, [refreshKey]);
 
-  const fetchAggregatedSlots = useCallback(async (serviceId, date) => {
-    if (!serviceId || !date) return;
+  const fetchDoctors = useCallback(async (serviceId) => {
+    if (!serviceId) return;
+    setDoctorsLoading(true);
+    setDoctors([]);
+    try {
+      const res = await doctorsApi.getAll({ serviceId });
+      setDoctors(normalizeList(res.data, "data"));
+    } catch (error) {
+      console.error("Failed to fetch doctors:", error);
+      toast.error("Không thể tải danh sách bác sĩ");
+    } finally {
+      setDoctorsLoading(false);
+    }
+  }, []);
+
+  const fetchDoctorSlots = useCallback(async (doctorId, date, serviceId) => {
+    if (!doctorId || !date) return;
     setSlotsLoading(true);
     setSlotsError("");
     setAvailableSlots([]);
-    setDoctors([]);
     try {
-      const res = await doctorsApi.getAggregatedSlots({ date, serviceId });
+      const res = await doctorsApi.getAvailableSlots(doctorId, { date, serviceId });
       setAvailableSlots(normalizeList(res.data, "slots"));
-      setDoctors(normalizeList(res.data, "doctors"));
     } catch (error) {
-      console.error("Failed to fetch aggregated slots:", error);
+      console.error("Failed to fetch slots:", error);
       setSlotsError("Không thể tải khung giờ khám. Vui lòng thử lại.");
       toast.error("Không thể tải khung giờ khám");
     } finally {
@@ -190,10 +199,14 @@ export default function PatientBookPage() {
   }, []);
 
   useEffect(() => {
-    if (formData.serviceId && formData.date) {
-      fetchAggregatedSlots(formData.serviceId, formData.date);
+    if (formData.serviceId) fetchDoctors(formData.serviceId);
+  }, [fetchDoctors, formData.serviceId, refreshKey]);
+
+  useEffect(() => {
+    if (formData.doctorId && formData.date) {
+      fetchDoctorSlots(formData.doctorId, formData.date, formData.serviceId);
     }
-  }, [fetchAggregatedSlots, formData.date, formData.serviceId, refreshKey]);
+  }, [fetchDoctorSlots, formData.doctorId, formData.date, formData.serviceId, refreshKey]);
 
   const handleServiceSelect = (serviceId) => {
     if (serviceId === formData.serviceId) {
@@ -208,26 +221,24 @@ export default function PatientBookPage() {
     setStep(2);
   };
 
-  const handleDateChange = (date) => {
-    setFormData((prev) => ({ ...prev, date, time: "", doctorId: "" }));
+  const handleDoctorSelect = (doctorId) => {
+    if (doctorId === formData.doctorId) {
+      setStep(3);
+      return;
+    }
+    setFormData((prev) => ({ ...prev, doctorId, date: "", time: "" }));
     setAvailableSlots([]);
-    setDoctorSearch("");
-    if (date && formData.serviceId) fetchAggregatedSlots(formData.serviceId, date);
-  };
-
-  const handleTimeSelect = (time) => {
-    setFormData((prev) => ({ ...prev, time, doctorId: "" }));
-    setDoctorSearch("");
     setStep(3);
   };
 
-  const handleDoctorSelect = (doctorId) => {
-    if (doctorId === formData.doctorId) {
-      setStep(4);
-      return;
-    }
+  const handleDateChange = (date) => {
+    setFormData((prev) => ({ ...prev, date, time: "" }));
+    setAvailableSlots([]);
+    if (date && formData.doctorId) fetchDoctorSlots(formData.doctorId, date, formData.serviceId);
+  };
 
-    setFormData((prev) => ({ ...prev, doctorId }));
+  const handleTimeSelect = (time) => {
+    setFormData((prev) => ({ ...prev, time }));
     setStep(4);
   };
 
@@ -258,22 +269,22 @@ export default function PatientBookPage() {
 
   const steps = [
     { id: 1, label: "Dịch vụ", icon: ClipboardCheck },
-    { id: 2, label: "Ngày giờ", icon: Calendar },
-    { id: 3, label: "Bác sĩ", icon: User },
+    { id: 2, label: "Bác sĩ", icon: User },
+    { id: 3, label: "Ngày giờ", icon: Calendar },
     { id: 4, label: "Xác nhận", icon: CheckCircle },
   ];
 
   const canGoToStep = (target) =>
     target === 1 ||
     (target === 2 && formData.serviceId) ||
-    (target === 3 && formData.serviceId && formData.date && formData.time) ||
+    (target === 3 && formData.serviceId && formData.doctorId) ||
     (target === 4 && formData.serviceId && formData.doctorId && formData.date && formData.time);
 
   const summaryItems = [
     { label: "Dịch vụ", value: selectedService?.name || "Chưa chọn" },
+    { label: "Bác sĩ", value: selectedDoctor?.userId?.fullName || selectedDoctor?.name || "Chưa chọn" },
     { label: "Ngày khám", value: formatDate(formData.date) },
     { label: "Giờ khám", value: formData.time || "Chưa chọn" },
-    { label: "Bác sĩ", value: selectedDoctor?.userId?.fullName || selectedDoctor?.name || "Chưa chọn" },
   ];
 
   return (
@@ -290,7 +301,7 @@ export default function PatientBookPage() {
               Chọn lịch khám phù hợp với bạn
             </h1>
             <p className="mt-3 text-base leading-7 text-muted-foreground">
-              Hoàn thành 4 bước rõ ràng để chọn dịch vụ, thời gian và bác sĩ đồng hành trong kế hoạch chăm sóc răng miệng.
+              Hoàn thành 4 bước rõ ràng để chọn dịch vụ, bác sĩ và thời gian khám phù hợp với lịch của bạn.
             </p>
           </div>
           <div className="grid gap-3 sm:grid-cols-3 lg:min-w-[420px]">
@@ -454,16 +465,99 @@ export default function PatientBookPage() {
           {step === 2 && (
             <Card className="soft-card border-white/80 bg-white/95 shadow-lg shadow-cyan-950/6">
               <CardHeader>
+                <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                  <div>
+                    <CardTitle>Chọn bác sĩ</CardTitle>
+                    <CardDescription>
+                      Dịch vụ: <span className="font-medium text-primary">{selectedService?.name}</span>
+                    </CardDescription>
+                  </div>
+                  <div className="relative w-full sm:max-w-md">
+                    <Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                    <input
+                      type="text"
+                      value={doctorSearch}
+                      onChange={(e) => setDoctorSearch(e.target.value)}
+                      placeholder="Tìm bác sĩ..."
+                      className="field-input h-11 rounded-xl pl-10"
+                    />
+                  </div>
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-6">
+                {doctorsLoading ? (
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    {[1,2,3].map(i => (
+                      <div key={i} className="flex items-start gap-4 rounded-xl border p-4">
+                        <div className="skeleton h-14 w-14 rounded-full" />
+                        <div className="flex-1 space-y-2">
+                          <div className="skeleton h-5 w-36" />
+                          <div className="skeleton h-4 w-48" />
+                          <div className="flex gap-2 pt-1">
+                            <div className="skeleton h-5 w-24 rounded-full" />
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : doctors.length === 0 ? (
+                  <EmptyState icon={AlertCircle} title="Chưa có bác sĩ" desc="Dịch vụ này chưa có bác sĩ phụ trách. Vui lòng chọn dịch vụ khác." />
+                ) : filteredDoctors.length === 0 ? (
+                  <EmptyState icon={Search} title="Không tìm thấy bác sĩ" desc="Thử từ khóa khác hoặc bỏ tìm kiếm." />
+                ) : (
+                  <RadioGroup value={formData.doctorId} onValueChange={handleDoctorSelect} className="grid gap-4 sm:grid-cols-2">
+                    {filteredDoctors.map((doctor) => {
+                      const name = doctor.userId?.fullName || doctor.name || "Bác sĩ";
+                      const spec = doctor.specialization || doctor.specialty || "Nha khoa tổng quát";
+                      return (
+                        <div key={doctor._id} onClick={() => handleDoctorSelect(doctor._id)}>
+                          <RadioGroupItem value={doctor._id} id={`doc-${doctor._id}`} className="peer sr-only" />
+                          <Label
+                            htmlFor={`doc-${doctor._id}`}
+                            className="flex min-h-36 cursor-pointer items-start gap-4 rounded-2xl border-2 bg-white p-4 transition-all hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-lg hover:shadow-primary/10 peer-data-[state=checked]:border-primary peer-data-[state=checked]:bg-primary/5 peer-data-[state=checked]:shadow-lg peer-data-[state=checked]:shadow-primary/10"
+                          >
+                            <UserAvatar
+                              avatar={doctor.userId?.avatar}
+                              name={name}
+                              email={doctor.userId?.email}
+                              cacheKey={doctor.userId?.updatedAt}
+                              size="lg"
+                              className="h-14 w-14 bg-muted ring-background"
+                            />
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-start justify-between gap-2">
+                                <span className="block truncate font-semibold">{name}</span>
+                                {formData.doctorId === doctor._id && <CheckCircle className="h-5 w-5 text-primary" />}
+                              </div>
+                              <p className="mt-1 text-sm text-muted-foreground">{spec}</p>
+                              <div className="mt-3 flex flex-wrap gap-2">
+                                <Badge variant="outline">{doctor.experience || 0} năm kinh nghiệm</Badge>
+                              </div>
+                            </div>
+                          </Label>
+                        </div>
+                      );
+                    })}
+                  </RadioGroup>
+                )}
+                <StepFooter onBack={() => setStep(1)} onNext={() => setStep(3)} nextDisabled={!formData.doctorId} />
+              </CardContent>
+            </Card>
+          )}
+
+          {step === 3 && (
+            <Card className="soft-card border-white/80 bg-white/95 shadow-lg shadow-cyan-950/6">
+              <CardHeader>
                 <CardTitle>Chọn ngày và giờ khám</CardTitle>
                 <CardDescription>
-                  Dịch vụ: <span className="font-medium text-primary">{selectedService?.name}</span>
+                  Bác sĩ: <span className="font-medium text-primary">{selectedDoctor?.userId?.fullName || selectedDoctor?.name}</span>
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-6">
                 <div className="grid gap-6 lg:grid-cols-[280px_1fr]">
                   <div className="space-y-2">
                     <Label>Ngày khám</Label>
-                     <Input
+                    <Input
                       type="date"
                       min={minDate}
                       max={maxDate}
@@ -514,93 +608,7 @@ export default function PatientBookPage() {
                     )}
                   </div>
                 </div>
-                <StepFooter onBack={() => setStep(1)} onNext={() => setStep(3)} nextDisabled={!formData.date || !formData.time} />
-              </CardContent>
-            </Card>
-          )}
-
-          {step === 3 && (
-            <Card className="soft-card border-white/80 bg-white/95 shadow-lg shadow-cyan-950/6">
-              <CardHeader>
-                <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                  <div>
-                    <CardTitle>Chọn bác sĩ</CardTitle>
-                    <CardDescription>
-                      Bác sĩ còn trống lúc <span className="font-medium text-primary">{formData.time}</span> ngày{" "}
-                      <span className="font-medium text-primary">{formatDate(formData.date)}</span>
-                    </CardDescription>
-                  </div>
-                  <div className="relative w-full sm:max-w-md">
-                    <Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                    <input
-                      type="text"
-                      value={doctorSearch}
-                      onChange={(e) => setDoctorSearch(e.target.value)}
-                      placeholder="Tìm bác sĩ..."
-                      className="field-input h-11 rounded-xl pl-10"
-                    />
-                  </div>
-                </div>
-              </CardHeader>
-              <CardContent className="space-y-6">
-                {slotsLoading ? (
-                  <div className="grid gap-4 sm:grid-cols-2">
-                    {[1,2].map(i => (
-                      <div key={i} className="flex items-start gap-4 rounded-xl border p-4">
-                        <div className="skeleton h-14 w-14 rounded-full" />
-                        <div className="flex-1 space-y-2">
-                          <div className="skeleton h-5 w-36" />
-                          <div className="skeleton h-4 w-48" />
-                          <div className="flex gap-2 pt-1">
-                            <div className="skeleton h-5 w-16 rounded-full" />
-                            <div className="skeleton h-5 w-24 rounded-full" />
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                ) : availableDoctorsForTime.length === 0 ? (
-                  <EmptyState icon={AlertCircle} title="Không còn bác sĩ trống" desc="Vui lòng quay lại chọn khung giờ khác." />
-                ) : filteredDoctors.length === 0 ? (
-                  <EmptyState icon={Search} title="Không tìm thấy bác sĩ" desc="Thử từ khóa khác hoặc bỏ tìm kiếm." />
-                ) : (
-                  <RadioGroup value={formData.doctorId} onValueChange={handleDoctorSelect} className="grid gap-4 sm:grid-cols-2">
-                    {filteredDoctors.map((doctor) => {
-                      const name = doctor.userId?.fullName || doctor.name || "Bác sĩ";
-                      const spec = doctor.specialization || doctor.specialty || "Nha khoa tổng quát";
-                      return (
-                        <div key={doctor._id} onClick={() => handleDoctorSelect(doctor._id)}>
-                          <RadioGroupItem value={doctor._id} id={`doc-${doctor._id}`} className="peer sr-only" />
-                          <Label
-                            htmlFor={`doc-${doctor._id}`}
-                            className="flex min-h-36 cursor-pointer items-start gap-4 rounded-2xl border-2 bg-white p-4 transition-all hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-lg hover:shadow-primary/10 peer-data-[state=checked]:border-primary peer-data-[state=checked]:bg-primary/5 peer-data-[state=checked]:shadow-lg peer-data-[state=checked]:shadow-primary/10"
-                          >
-                            <UserAvatar
-                              avatar={doctor.userId?.avatar}
-                              name={name}
-                              email={doctor.userId?.email}
-                              cacheKey={doctor.userId?.updatedAt}
-                              size="lg"
-                              className="h-14 w-14 bg-muted ring-background"
-                            />
-                            <div className="min-w-0 flex-1">
-                              <div className="flex items-start justify-between gap-2">
-                                <span className="block truncate font-semibold">{name}</span>
-                                {formData.doctorId === doctor._id && <CheckCircle className="h-5 w-5 text-primary" />}
-                              </div>
-                              <p className="mt-1 text-sm text-muted-foreground">{spec}</p>
-                              <div className="mt-3 flex flex-wrap gap-2">
-                                <Badge variant="secondary">{formData.time}</Badge>
-                                <Badge variant="outline">{doctor.experience || 0} năm kinh nghiệm</Badge>
-                              </div>
-                            </div>
-                          </Label>
-                        </div>
-                      );
-                    })}
-                  </RadioGroup>
-                )}
-                <StepFooter onBack={() => setStep(2)} onNext={() => setStep(4)} nextDisabled={!formData.doctorId} />
+                <StepFooter onBack={() => setStep(2)} onNext={() => setStep(4)} nextDisabled={!formData.date || !formData.time} />
               </CardContent>
             </Card>
           )}

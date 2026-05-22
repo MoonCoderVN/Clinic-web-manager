@@ -299,6 +299,49 @@ const matchServiceFromText = (text, services) => {
     return matched.length === 1 ? matched[0] : null;
 };
 
+const matchDoctorFromText = (text, doctors) => {
+    const norm = normalizeText(text);
+    const matched = doctors.filter((d) => {
+        const name = normalizeText(d.userId?.fullName || "");
+        return name && (norm.includes(name) || name.split(/\s+/).some((p) => p.length >= 3 && norm.includes(p)));
+    });
+    return matched.length === 1 ? matched[0] : null;
+};
+
+const getSlotsForDoctor = async (doctorId, dateStr, serviceId) => {
+    const [y, m, d] = dateStr.split("-").map(Number);
+    const targetDate = new Date(y, m - 1, d);
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    if (targetDate < today) return [];
+
+    const dayOfWeek = targetDate.getDay();
+    const weekStart = getMondayStr(targetDate);
+
+    const service = await Service.findOne({ _id: serviceId, isActive: true, isDeleted: { $ne: true } }).lean();
+    if (!service) return [];
+    const duration = service.duration || 30;
+
+    const doctor = await Doctor.findById(doctorId).populate("userId", "fullName isActive").lean();
+    if (!doctor || !doctor.userId || doctor.userId.isActive === false) return [];
+    const doctorUserId = doctor.userId._id;
+
+    let scheduleEntry = await Schedule.findOne({ doctorId: doctorUserId, dayOfWeek, weekStart }).lean();
+    if (!scheduleEntry) scheduleEntry = await Schedule.findOne({ doctorId: doctorUserId, dayOfWeek, weekStart: null }).lean();
+    if (!scheduleEntry || scheduleEntry.isOff || !scheduleEntry.startTime || !scheduleEntry.endTime) return [];
+
+    const dayStart = new Date(targetDate); dayStart.setHours(0, 0, 0, 0);
+    const dayEnd = new Date(targetDate); dayEnd.setHours(23, 59, 59, 999);
+    const booked = await Appointment.find({
+        doctorId,
+        $or: [{ appointmentDate: { $gte: dayStart, $lte: dayEnd } }, { date: { $gte: dayStart, $lte: dayEnd } }],
+        status: { $nin: ["cancelled"] },
+    }).select("startTime endTime timeSlot").lean();
+
+    const allSlots = calcSlots(scheduleEntry.startTime, scheduleEntry.endTime, duration, booked);
+    const afterLeave = await filterSlotsByApprovedLeave(allSlots, doctorUserId, dateStr);
+    return afterLeave.filter((s) => s.available).map((s) => s.time);
+};
+
 const matchSlotFromText = (text, slots) => {
     const norm = normalizeText(text);
     const timeHint = parseTimeForBooking(text);
@@ -423,14 +466,52 @@ const conductBookingFlow = async (message, bookingContext, isAuthenticated) => {
                 uiState: "done",
                 quickReplies: services.map((s) => ({
                     label: s.name, value: s.name,
-                    bookingData: { serviceId: s._id.toString(), serviceName: s.name, step: "date_select" },
+                    bookingData: { serviceId: s._id.toString(), serviceName: s.name, step: "doctor_select" },
                 })),
                 bookingAssist: { step: "service_select" },
             };
         }
     }
 
-    // Step 2: No date selected yet
+    // Step 2: No doctor selected yet — show doctors for this service
+    if (!ctx.doctorId) {
+        const doctors = await Doctor.find({ services: ctx.serviceId })
+            .populate("userId", "fullName isActive")
+            .select("_id userId specialization")
+            .lean();
+        const activeDoctors = doctors.filter((d) => d.userId?.isActive !== false && d.userId);
+
+        if (activeDoctors.length === 0) {
+            return {
+                answer: `Hiện chưa có bác sĩ phụ trách dịch vụ **${ctx.serviceName}**. Vui lòng chọn dịch vụ khác hoặc liên hệ phòng khám.`,
+                sources: [],
+                uiState: "done",
+                quickReplies: [
+                    { label: "Chọn dịch vụ khác", value: "Tôi muốn đặt lịch", bookingData: { reset: true } },
+                ],
+                bookingAssist: { step: "doctor_select", ...ctx },
+            };
+        }
+
+        const matchedDoctor = matchDoctorFromText(text, activeDoctors);
+        if (matchedDoctor) {
+            ctx = { ...ctx, doctorId: matchedDoctor._id.toString(), doctorName: matchedDoctor.userId.fullName };
+        } else {
+            return {
+                answer: `Dịch vụ **${ctx.serviceName}** — chọn bác sĩ bạn muốn khám:`,
+                sources: [],
+                uiState: "done",
+                quickReplies: activeDoctors.slice(0, 10).map((d) => ({
+                    label: `BS. ${d.userId.fullName}`,
+                    value: `BS. ${d.userId.fullName}`,
+                    bookingData: { doctorId: d._id.toString(), doctorName: d.userId.fullName, step: "date_select" },
+                })),
+                bookingAssist: { step: "doctor_select", ...ctx },
+            };
+        }
+    }
+
+    // Step 3: No date selected yet
     if (!ctx.date) {
         const parsedDate = parseDateForBooking(text);
         if (parsedDate) {
@@ -438,7 +519,7 @@ const conductBookingFlow = async (message, bookingContext, isAuthenticated) => {
         } else {
             const page = ctx.datePage || 0;
             return {
-                answer: `Dịch vụ **${ctx.serviceName}** đã được chọn. Bạn muốn đặt khám vào ngày nào?\n_Hoặc gõ ngày cụ thể (vd: 28/05, thứ 2 tuần sau)_`,
+                answer: `BS. **${ctx.doctorName}** — bạn muốn đặt khám vào ngày nào?\n_Hoặc gõ ngày cụ thể (vd: 28/05, thứ 2 tuần sau)_`,
                 sources: [],
                 uiState: "done",
                 quickReplies: generateDateQuickReplies(page),
@@ -447,83 +528,38 @@ const conductBookingFlow = async (message, bookingContext, isAuthenticated) => {
         }
     }
 
-    // Step 3: No time selected — show available time slots
+    // Step 4: No time selected — show available slots for this doctor
     if (!ctx.startTime) {
-        const allSlots = await getAvailableSlotsForBooking(ctx.date, ctx.serviceId);
+        const times = await getSlotsForDoctor(ctx.doctorId, ctx.date, ctx.serviceId);
 
-        if (allSlots.length === 0) {
+        if (times.length === 0) {
             return {
-                answer: `Rất tiếc, không có lịch trống nào cho dịch vụ **${ctx.serviceName}** vào **${formatDateVN(ctx.date)}**. Bạn muốn chọn ngày khác không?`,
+                answer: `Rất tiếc, **BS. ${ctx.doctorName}** không có lịch trống vào **${formatDateVN(ctx.date)}**. Bạn muốn thử ngày khác hoặc đổi bác sĩ?`,
                 sources: [],
                 uiState: "done",
                 quickReplies: [
                     { label: "Chọn ngày khác", value: "Chọn ngày khác", bookingData: { date: null, step: "date_select" } },
+                    { label: "Đổi bác sĩ", value: "Đổi bác sĩ", bookingData: { doctorId: null, doctorName: null, date: null, step: "doctor_select" } },
                     { label: "Bắt đầu lại", value: "Tôi muốn đặt lịch", bookingData: { reset: true } },
                 ],
                 bookingAssist: { step: "time_select", ...ctx },
             };
         }
 
-        // Deduplicate times while preserving order
-        const seen = new Set();
-        const uniqueTimes = [];
-        for (const s of allSlots) {
-            if (!seen.has(s.time)) { seen.add(s.time); uniqueTimes.push(s.time); }
-        }
-
-        // Free-text: user typed a time like "8h"
         const timeHint = parseTimeForBooking(text);
-        if (timeHint && seen.has(timeHint)) {
+        if (timeHint && times.includes(timeHint)) {
             ctx = { ...ctx, startTime: timeHint };
         } else {
-            const quickReplies = uniqueTimes.slice(0, 12).map((t) => ({
-                label: t,
-                value: t,
-                bookingData: { startTime: t, step: "doctor_select" },
-            }));
             return {
-                answer: `Chọn giờ khám vào **${formatDateVN(ctx.date)}**:\n_Hoặc gõ giờ cụ thể (vd: 8h, 14:30)_`,
+                answer: `Chọn giờ khám với **BS. ${ctx.doctorName}** vào **${formatDateVN(ctx.date)}**:\n_Hoặc gõ giờ cụ thể (vd: 8h, 14:30)_`,
                 sources: [],
                 uiState: "done",
-                quickReplies,
+                quickReplies: times.slice(0, 12).map((t) => ({
+                    label: t,
+                    value: t,
+                    bookingData: { startTime: t, step: "confirm" },
+                })),
                 bookingAssist: { step: "time_select", ...ctx },
-            };
-        }
-    }
-
-    // Step 4: No doctor selected — filter by chosen time, show doctors
-    if (!ctx.doctorId) {
-        const allSlots = await getAvailableSlotsForBooking(ctx.date, ctx.serviceId);
-        const timeSlots = allSlots.filter((s) => s.time === ctx.startTime);
-
-        if (timeSlots.length === 0) {
-            return {
-                answer: `Rất tiếc, không còn lịch trống lúc **${ctx.startTime}** ngày **${formatDateVN(ctx.date)}**. Bạn muốn chọn giờ khác không?`,
-                sources: [],
-                uiState: "done",
-                quickReplies: [
-                    { label: "Chọn giờ khác", value: "Chọn giờ khác", bookingData: { startTime: null, step: "time_select" } },
-                    { label: "Bắt đầu lại", value: "Tôi muốn đặt lịch", bookingData: { reset: true } },
-                ],
-                bookingAssist: { step: "doctor_select", ...ctx },
-            };
-        }
-
-        const matchedSlot = matchSlotFromText(text, timeSlots);
-        if (matchedSlot) {
-            ctx = { ...ctx, doctorId: matchedSlot.doctorId, doctorName: matchedSlot.doctorName };
-        } else {
-            const quickReplies = timeSlots.map((slot) => ({
-                label: `BS. ${slot.doctorName}`,
-                value: `BS. ${slot.doctorName}`,
-                bookingData: { doctorId: slot.doctorId, doctorName: slot.doctorName, step: "confirm" },
-            }));
-            return {
-                answer: `Chọn bác sĩ khám lúc **${ctx.startTime}** ngày **${formatDateVN(ctx.date)}**:`,
-                sources: [],
-                uiState: "done",
-                quickReplies,
-                bookingAssist: { step: "doctor_select", ...ctx },
             };
         }
     }
