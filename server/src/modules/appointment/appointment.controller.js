@@ -370,7 +370,15 @@ export const createAppointment = async (req, res, next) => {
             status: "pending",
         };
 
-        const appointment = await Appointment.create(appointmentData);
+        let appointment;
+        try {
+            appointment = await Appointment.create(appointmentData);
+        } catch (createErr) {
+            if (createErr.code === 11000) {
+                return res.status(409).json({ success: false, message: "Slot này vừa được đặt bởi người khác. Vui lòng chọn slot khác." });
+            }
+            throw createErr;
+        }
 
         // Send notification to patient
         await createNotification(

@@ -3,6 +3,7 @@ import { useChat } from "../../context/ChatContext";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Badge } from "../ui/badge";
+import { Tooltip, TooltipTrigger, TooltipContent } from "../ui/tooltip";
 import { Send, User, Bot, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { renderMarkdownText } from "../../utils/renderMarkdownText";
@@ -62,26 +63,30 @@ const ChatWindow = () => {
             </div>
             <div className={cn("max-w-[80%] p-3 rounded-2xl text-sm shadow-sm",
               msg.role === "user" ? "bg-primary text-white rounded-tr-none" : "bg-white border rounded-tl-none")}>
-              <div className="break-words">
-                {msg.content ? renderMarkdownText(msg.content) : (
-                  <span className="text-slate-500">{streamStatusText?.[uiState] || "AI đang xử lý..."}</span>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <div className="break-words cursor-default">
+                    {msg.content ? renderMarkdownText(msg.content) : (
+                      <span className="text-slate-500">{streamStatusText?.[uiState] || "AI đang xử lý..."}</span>
+                    )}
+                  </div>
+                </TooltipTrigger>
+                {msg.role === "assistant" && msg.sources?.length > 0 && (
+                  <TooltipContent side="top" className="bg-white border shadow-lg text-foreground p-2 max-w-xs flex flex-wrap gap-1.5">
+                    {msg.sources.slice(0, 3).map((source, index) => (
+                      <Badge
+                        key={`${source.knowledgeId || source.title || source.source}-${index}`}
+                        variant="secondary"
+                        className="min-w-0 max-w-full overflow-hidden text-[10px]"
+                      >
+                        <span className="block max-w-full truncate">
+                          Nguồn: {source.title || source.source || source.category}
+                        </span>
+                      </Badge>
+                    ))}
+                  </TooltipContent>
                 )}
-              </div>
-              {msg.role === "assistant" && msg.sources?.length > 0 && (
-                <div className="mt-3 flex max-w-full flex-wrap gap-1.5 overflow-hidden border-t pt-2">
-                  {msg.sources.slice(0, 3).map((source, index) => (
-                    <Badge
-                      key={`${source.knowledgeId || source.title || source.source}-${index}`}
-                      variant="secondary"
-                      className="min-w-0 max-w-full overflow-hidden text-[10px]"
-                    >
-                      <span className="block max-w-full truncate">
-                        Nguồn: {source.title || source.source || source.category}
-                      </span>
-                    </Badge>
-                  ))}
-                </div>
-              )}
+              </Tooltip>
               {msg.role === "assistant" && msg.quickReplies?.length > 0 && (
                 <div className="mt-3 flex flex-wrap gap-2 border-t pt-2">
                   {msg.quickReplies.slice(0, 3).map((reply, index) => (

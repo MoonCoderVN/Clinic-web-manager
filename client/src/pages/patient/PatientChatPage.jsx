@@ -3,6 +3,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { toast } from "sonner";
 import { Send, Bot, User, Loader2, MessageSquare, Trash2, Sparkles, HeartPulse, ShieldCheck } from "lucide-react";
 import axiosInstance from "@/api/httpClient";
@@ -277,27 +278,29 @@ function ChatBubble({ message }) {
           isUser ? "bg-primary text-primary-foreground shadow-primary/15" : "bg-primary/8 text-foreground"
         }`}
       >
-        <div className="whitespace-pre-line break-words">{renderMarkdownText(message.content)}</div>
-        {!isUser && message.sources?.length > 0 && <SourceBadges sources={message.sources} />}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <div className="whitespace-pre-line break-words cursor-default">
+              {renderMarkdownText(message.content)}
+            </div>
+          </TooltipTrigger>
+          {!isUser && message.sources?.length > 0 && (
+            <TooltipContent side="top" className="bg-white border shadow-lg text-foreground p-2 max-w-xs flex flex-wrap gap-1.5">
+              {message.sources.slice(0, 3).map((source, index) => (
+                <Badge
+                  key={`${source.knowledgeId || source.title || source.source}-${index}`}
+                  variant="secondary"
+                  className="min-w-0 max-w-full overflow-hidden text-[11px]"
+                >
+                  <span className="block max-w-full truncate">
+                    Nguồn: {source.title || source.source || source.category}
+                  </span>
+                </Badge>
+              ))}
+            </TooltipContent>
+          )}
+        </Tooltip>
       </div>
-    </div>
-  );
-}
-
-function SourceBadges({ sources = [] }) {
-  return (
-    <div className="mt-3 flex max-w-full flex-wrap gap-1.5 overflow-hidden border-t border-border/60 pt-2">
-      {sources.slice(0, 3).map((source, index) => (
-        <Badge
-          key={`${source.knowledgeId || source.title || source.source}-${index}`}
-          variant="secondary"
-          className="min-w-0 max-w-full overflow-hidden text-[11px]"
-        >
-          <span className="block max-w-full truncate">
-            Nguồn: {source.title || source.source || source.category}
-          </span>
-        </Badge>
-      ))}
     </div>
   );
 }

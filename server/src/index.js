@@ -35,6 +35,15 @@ import leaveRequestRoutes from "./modules/leaveRequest/leaveRequest.route.js";
 import { getPublicSettings } from "./modules/admin/settings.controller.js";
 import { configureSocket } from "./realtime/socket.js";
 
+// ── Validate env TRƯỚC KHI khởi tạo bất cứ thứ gì ──────────────────────────
+const REQUIRED_ENV_VARS = ["MONGODB_URI", "JWT_SECRET", "JWT_REFRESH_SECRET", "MAIL_USER", "MAIL_PASS", "GEMINI_API_KEY"];
+const missingEnvVars = REQUIRED_ENV_VARS.filter((key) => !process.env[key]);
+if (missingEnvVars.length > 0) {
+    console.error(`[FATAL] Missing required env vars: ${missingEnvVars.join(", ")}`);
+    process.exit(1);
+}
+// ────────────────────────────────────────────────────────────────────────────
+
 const app = express();
 const server = http.createServer(app);
 ensureUploadDirs();
@@ -89,22 +98,6 @@ app.get("/", (req, res) => res.send("DentaCare API is running..."));
 
 app.use(notFound);
 app.use(errorHandler);
-
-// Validate required environment variables
-const requiredEnvVars = [
-    'MONGODB_URI',
-    'JWT_SECRET',
-    'JWT_REFRESH_SECRET',
-    'MAIL_USER',
-    'MAIL_PASS',
-    'GEMINI_API_KEY'
-];
-
-const missingEnvVars = requiredEnvVars.filter(v => !process.env[v]);
-if (missingEnvVars.length > 0) {
-    logger.error(`Missing required environment variables: ${missingEnvVars.join(', ')}`);
-    process.exit(1);
-}
 
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {

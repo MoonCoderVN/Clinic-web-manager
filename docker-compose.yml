@@ -1,0 +1,38 @@
+version: '3.9'
+
+services:
+  server:
+    build: ./server
+    ports:
+      - "5002:5002"
+    env_file:
+      - ./server/.env
+    depends_on:
+      - mongo
+    restart: unless-stopped
+
+  ai_service:
+    build: ./ai_service
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./ai_service/.env
+    restart: unless-stopped
+
+  client:
+    build: ./client
+    ports:
+      - "5173:80"
+    depends_on:
+      - server
+    restart: unless-stopped
+
+  mongo:
+    image: mongo:7
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+
+volumes:
+  mongo_data:

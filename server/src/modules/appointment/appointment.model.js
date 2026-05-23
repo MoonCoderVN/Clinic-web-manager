@@ -58,6 +58,17 @@ appointmentSchema.index({ doctorId: 1, appointmentDate: -1 });
 appointmentSchema.index({ status: 1, appointmentDate: 1 });
 appointmentSchema.index({ appointmentDate: 1 });
 
+// Chống race condition: ngăn hai bệnh nhân đặt cùng slot của cùng bác sĩ đồng thời.
+// Dùng partialFilterExpression để chỉ áp dụng cho appointment đang active — completed/cancelled không bị ảnh hưởng.
+appointmentSchema.index(
+    { doctorId: 1, appointmentDate: 1, startTime: 1 },
+    {
+        unique: true,
+        partialFilterExpression: { status: { $in: ["pending", "confirmed", "rescheduled", "in_progress"] } },
+        name: "unique_active_slot",
+    }
+);
+
 // Virtual để unify date fields (backward compatibility)
 appointmentSchema.virtual("effectiveDate").get(function () {
     return this.appointmentDate;

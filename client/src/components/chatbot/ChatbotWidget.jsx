@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
@@ -331,24 +332,30 @@ export default function ChatbotWidget() {
                           : "border bg-card text-card-foreground shadow-sm"
                       )}
                     >
-                      {message.content ? renderMarkdownText(message.content) : (
-                        <span className="text-muted-foreground">{streamStatusText[uiState] || "AI đang xử lý..."}</span>
-                      )}
-                      {message.role === "assistant" && message.sources?.length > 0 && (
-                        <div className="mt-3 flex max-w-full flex-wrap gap-1.5 overflow-hidden border-t border-border/60 pt-2">
-                          {message.sources.slice(0, 3).map((source, index) => (
-                            <Badge
-                              key={`${source.knowledgeId || source.title || source.source}-${index}`}
-                              variant="secondary"
-                              className="min-w-0 max-w-full overflow-hidden text-[10px]"
-                            >
-                              <span className="block max-w-full truncate">
-                                Nguồn: {source.title || source.source || source.category}
-                              </span>
-                            </Badge>
-                          ))}
-                        </div>
-                      )}
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <div className="break-words cursor-default">
+                            {message.content ? renderMarkdownText(message.content) : (
+                              <span className="text-muted-foreground">{streamStatusText[uiState] || "AI đang xử lý..."}</span>
+                            )}
+                          </div>
+                        </TooltipTrigger>
+                        {message.role === "assistant" && message.sources?.length > 0 && (
+                          <TooltipContent side="top" className="bg-white border shadow-lg text-foreground p-2 max-w-xs flex flex-wrap gap-1.5">
+                            {message.sources.slice(0, 3).map((source, index) => (
+                              <Badge
+                                key={`${source.knowledgeId || source.title || source.source}-${index}`}
+                                variant="secondary"
+                                className="min-w-0 max-w-full overflow-hidden text-[10px]"
+                              >
+                                <span className="block max-w-full truncate">
+                                  Nguồn: {source.title || source.source || source.category}
+                                </span>
+                              </Badge>
+                            ))}
+                          </TooltipContent>
+                        )}
+                      </Tooltip>
                       {message.role === "assistant" && message.quickReplies?.length > 0 && (
                         <div className="mt-3 flex flex-wrap gap-2 border-t border-border/60 pt-2">
                           {message.quickReplies.slice(0, 12).map((reply, index) => (

@@ -53,6 +53,10 @@ const hasTimePeriodSignal = (text = "") =>
 const hasBookingFlowSignal = (text = "") =>
     /(muon dat|muon hen|cho.*dat|can dat lich|dat lich kham|ho tro dat|tu van dat lich|dang ky kham|dang ky lich|can kham|giup.*dat|huong dan dat|bat dau dat)/.test(text);
 
+// NOTE: Logic intent classification này mirror từ ai_service/intent/classifier.py (Python).
+// Lý do tồn tại ở hai nơi: Node.js xử lý routing inline nhanh (không cần qua HTTP),
+// Python xử lý booking wizard phức tạp với state machine qua AI service.
+// TODO: Refactor — tách thành shared rules dạng JSON/YAML để cả hai service đọc chung.
 const classifyChatIntent = (message = "", bookingContext = null) => {
     const text = normalizeText(message);
 
@@ -1058,3 +1062,6 @@ export const clearChatHistory = async (req, res, next) => {
         next(error);
     }
 };
+
+// Export pure function for unit testing
+export { classifyChatIntent };

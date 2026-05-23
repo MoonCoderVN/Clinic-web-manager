@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     RAG_VECTOR_WEIGHT: float = 0.7
     RAG_KEYWORD_WEIGHT: float = 0.3
     PORT: int = 8000
+    # Comma-separated list of origins allowed to call this service.
+    # Should only include the Node.js backend URL — never "*".
+    ALLOWED_ORIGINS: str = "http://localhost:5002"
 
     model_config = {"env_file": ".env", "extra": "ignore"}
 
