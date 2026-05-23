@@ -892,7 +892,7 @@ const normalizePublicHistory = (history = []) => {
 
 const publicRateMap = new Map();
 const checkPublicRateLimit = (req, res) => {
-    const ip = req.ip || req.connection.remoteAddress || "unknown";
+    const ip = req.ip || req.socket?.remoteAddress || "unknown";
     const now = Date.now();
     const windowMs = 60_000;
     const maxReq = 20;

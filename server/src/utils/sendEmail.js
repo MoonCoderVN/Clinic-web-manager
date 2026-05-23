@@ -1,4 +1,5 @@
 import nodemailer from "nodemailer";
+import logger from "./logger.js";
 
 const getSmtpErrorDetails = (err) => ({
     code: err?.code,
@@ -10,7 +11,7 @@ const getSmtpErrorDetails = (err) => ({
 
 export const sendEmail = async (to, subject, html) => {
     if (!process.env.MAIL_USER || !process.env.MAIL_PASS) {
-        console.warn("[Email] MAIL_USER / MAIL_PASS chưa được cấu hình.");
+        logger.warn("[Email] MAIL_USER / MAIL_PASS chưa được cấu hình.");
         throw new Error("Email chưa được cấu hình (thiếu MAIL_USER hoặc MAIL_PASS)");
     }
 
@@ -35,19 +36,16 @@ export const sendEmail = async (to, subject, html) => {
             subject,
             html,
         });
-        console.log(`[Email] ✅ Đã gửi "${subject}" → ${to}`);
+        logger.info(`[Email] Đã gửi "${subject}" → ${to}`);
         return true;
     } catch (err) {
         const details = getSmtpErrorDetails(err);
-        console.error(`[Email] ❌ Gửi thất bại (${to}):`, details);
+        logger.error(`[Email] Gửi thất bại (${to}): ${JSON.stringify(details)}`);
 
         // Phân loại lỗi để thông báo rõ ràng
         if (details.code === "EAUTH" || details.responseCode === 535) {
-            console.error(
-                "[Email] ⚠️  Gmail từ chối xác thực!\n" +
-                "  → Cần dùng App Password 16 ký tự (không dùng mật khẩu Gmail thường)\n" +
-                "  → Bật 2FA: myaccount.google.com → Security → 2-Step Verification\n" +
-                "  → Tạo App Password: myaccount.google.com → Security → App passwords"
+            logger.error(
+                "[Email] Gmail từ chối xác thực — cần App Password 16 ký tự (không dùng mật khẩu Gmail thường)"
             );
             throw new Error("SMTP xác thực thất bại — App Password Gmail không hợp lệ hoặc đã bị thu hồi");
         }

@@ -2,6 +2,7 @@ import crypto from "crypto";
 import jwt from "jsonwebtoken";
 import { OAuth2Client } from "google-auth-library";
 import User from "../user/user.model.js";
+import logger from "../../utils/logger.js";
 import Patient from "../patient/patient.model.js";
 import { generateAccessToken, generateRefreshToken } from "../../utils/generateToken.js";
 import { sendEmail } from "../../utils/sendEmail.js";
@@ -36,7 +37,7 @@ const ensurePatientProfile = async (user) => {
     if (existingProfile) return;
 
     await Patient.create({ userId: user._id });
-    console.warn(`[Patient] Auto-created missing profile for user ${user._id}`);
+    logger.warn(`[Patient] Auto-created missing profile for user ${user._id}`);
 };
 
 export const register = async (userData) => {
@@ -59,7 +60,7 @@ export const register = async (userData) => {
         const { subject, html } = welcomeRegisterTemplate({ fullName, loginUrl });
         await sendEmail(email, subject, html);
     } catch (emailErr) {
-        console.warn("[Auth] Không gửi được email chào mừng:", emailErr.message);
+        logger.warn(`[Auth] Không gửi được email chào mừng: ${emailErr.message}`);
     }
 
     return buildAuthPayload(user);

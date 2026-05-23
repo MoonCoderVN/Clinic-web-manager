@@ -1,4 +1,5 @@
 import User from "../modules/user/user.model.js";
+import logger from "../utils/logger.js";
 
 /**
  * Tự động tạo tài khoản Admin mặc định nếu chưa tồn tại.
@@ -32,12 +33,9 @@ const seedAdmin = async () => {
             isActive: true,
         });
 
-        console.log("✅ Admin account created successfully!");
-        console.log(`   Email   : ${adminEmail}`);
-        console.log(`   Password: ${adminPassword}`);
-        console.log("   ⚠️  Hãy đổi mật khẩu sau khi đăng nhập lần đầu!");
+        logger.info(`Admin account created — email: ${adminEmail}`);
     } catch (error) {
-        console.error("❌ Failed to seed admin:", error.message);
+        logger.error(`Failed to seed admin: ${error.message}`);
     }
 };
 

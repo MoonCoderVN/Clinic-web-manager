@@ -525,8 +525,24 @@ export const createDoctor = async (req, res, next) => {
 // ──────────────────────────────────────────────────────────────────
 export const getAllUsers = async (req, res, next) => {
     try {
-        const users = await User.find().select("-password");
-        return apiResponse(res, 200, "All users retrieved", users);
+        const { search, page = 1, limit = 20 } = req.query;
+        const skip = (parseInt(page) - 1) * parseInt(limit);
+        const query = {};
+        if (search) {
+            const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+            const regex = new RegExp(escaped, "i");
+            query.$or = [{ fullName: regex }, { email: regex }, { phone: regex }];
+        }
+        const [users, total] = await Promise.all([
+            User.find(query).select("-password").skip(skip).limit(parseInt(limit)).sort({ createdAt: -1 }),
+            User.countDocuments(query),
+        ]);
+        return apiResponse(res, 200, "All users retrieved", {
+            users,
+            total,
+            page: parseInt(page),
+            totalPages: Math.ceil(total / parseInt(limit)),
+        });
     } catch (error) {
         next(error);
     }

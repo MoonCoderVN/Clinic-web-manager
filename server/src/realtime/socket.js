@@ -1,5 +1,6 @@
 import { Server } from "socket.io";
 import jwt from "jsonwebtoken";
+import logger from "../utils/logger.js";
 import User from "../modules/user/user.model.js";
 import Doctor from "../modules/doctor/doctor.model.js";
 
@@ -63,12 +64,12 @@ export const configureSocket = (server, allowedOrigins) => {
       try {
         const user = await User.findById(socket.user.id).select("isActive");
         if (!user || !user.isActive) {
-          console.log(`[Socket] Disconnecting deactivated user: ${socket.user.id}`);
+          logger.info(`[Socket] Disconnecting deactivated user: ${socket.user.id}`);
           socket.disconnect(true);
           clearInterval(checkInterval);
         }
       } catch (err) {
-        console.error("[Socket] Error checking user status:", err.message);
+        logger.error(`[Socket] Error checking user status: ${err.message}`);
       }
     }, 5 * 60 * 1000); // 5 phút
 

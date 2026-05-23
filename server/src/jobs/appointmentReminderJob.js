@@ -8,6 +8,7 @@
  */
 
 import cron from "node-cron";
+import logger from "../utils/logger.js";
 import Appointment from "../modules/appointment/appointment.model.js";
 import Doctor from "../modules/doctor/doctor.model.js";
 import User from "../modules/user/user.model.js";
@@ -51,13 +52,13 @@ export const sendAppointmentHourReminders = async () => {
 
             const timeParts = startTime.split(":");
             if (timeParts.length !== 2) {
-                console.warn(`[HourReminder] Invalid time format: ${startTime}`);
+                logger.warn(`[HourReminder] Invalid time format: ${startTime}`);
                 continue;
             }
             const hours = parseInt(timeParts[0], 10);
             const minutes = parseInt(timeParts[1], 10);
             if (isNaN(hours) || isNaN(minutes) || hours < 0 || hours > 23 || minutes < 0 || minutes > 59) {
-                console.warn(`[HourReminder] Invalid time values: ${startTime}`);
+                logger.warn(`[HourReminder] Invalid time values: ${startTime}`);
                 continue;
             }
             const apptDateTime = new Date(appt.appointmentDate || appt.date);
@@ -103,10 +104,10 @@ export const sendAppointmentHourReminders = async () => {
 
             // 3. Đánh dấu đã gửi (thêm field hourReminderSent vào model)
             await Appointment.findByIdAndUpdate(appt._id, { hourReminderSent: true });
-            console.log(`[HourReminder] ✓ ${patient.email} — ${startTime}`);
+            logger.info(`[HourReminder] Sent reminder to ${patient.email} — ${startTime}`);
         }
     } catch (err) {
-        console.error("[HourReminder] Lỗi:", err.message);
+        logger.error(`[HourReminder] Lỗi: ${err.message}`);
     }
 };
 
@@ -115,4 +116,4 @@ cron.schedule("* * * * *", () => {
     sendAppointmentHourReminders();
 }, { timezone: "Asia/Ho_Chi_Minh" });
 
-console.log("[HourReminder] Đã khởi tạo — kiểm tra mỗi phút.");
+logger.info("[HourReminder] Đã khởi tạo — kiểm tra mỗi phút.");

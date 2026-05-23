@@ -1,4 +1,5 @@
 import cron from "node-cron";
+import logger from "../utils/logger.js";
 import Appointment from "../modules/appointment/appointment.model.js";
 import User from "../modules/user/user.model.js";
 import { createNotification } from "../modules/notification/notification.service.js";
@@ -114,7 +115,7 @@ const createCancellationNotifications = async (appointments, mode = "expired") =
     const results = await Promise.allSettled(tasks);
     const failedCount = results.filter((result) => result.status === "rejected").length;
     if (failedCount > 0) {
-        console.warn(`[ExpiredAppointmentJob] Failed to create ${failedCount} cancellation notifications.`);
+        logger.warn(`[ExpiredAppointmentJob] Failed to create ${failedCount} cancellation notifications.`);
     }
 };
 
@@ -171,7 +172,7 @@ export const expireOverdueAppointments = async () => {
 
         await createCancellationNotifications(overdue, "expired");
         emitBulkAppointmentCancellation("expired-bulk", overdueIds);
-        console.log(`[ExpiredAppointmentJob] Auto-cancelled ${overdue.length} overdue appointments.`);
+        logger.info(`[ExpiredAppointmentJob] Auto-cancelled ${overdue.length} overdue appointments.`);
     }
 
     const staleCandidates = await populateAppointmentQuery(Appointment.find({
@@ -203,14 +204,14 @@ export const expireOverdueAppointments = async () => {
 
         await createCancellationNotifications(staleInProgress, "stale-in-progress");
         emitBulkAppointmentCancellation("stale-in-progress-cancelled", staleIds);
-        console.log(`[ExpiredAppointmentJob] Auto-cancelled ${staleIds.length} stale in-progress appointments.`);
+        logger.info(`[ExpiredAppointmentJob] Auto-cancelled ${staleIds.length} stale in-progress appointments.`);
     }
 };
 
 cron.schedule("*/15 * * * *", () => {
     expireOverdueAppointments().catch((err) => {
-        console.error("[ExpiredAppointmentJob] Error:", err.message);
+        logger.error(`[ExpiredAppointmentJob] Error: ${err.message}`);
     });
 }, { timezone: "Asia/Ho_Chi_Minh" });
 
-console.log("[ExpiredAppointmentJob] Initialized - checks every 15 minutes.");
+logger.info("[ExpiredAppointmentJob] Initialized - checks every 15 minutes.");

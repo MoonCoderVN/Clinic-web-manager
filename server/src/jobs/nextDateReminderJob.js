@@ -12,6 +12,7 @@
  */
 
 import cron from "node-cron";
+import logger from "../utils/logger.js";
 import ExamResult from "../modules/examResult/examResult.model.js";
 import Doctor from "../modules/doctor/doctor.model.js";
 import User from "../modules/user/user.model.js";
@@ -44,11 +45,11 @@ export const sendNextDateReminders = async () => {
         });
 
         if (!results.length) {
-            console.log("[ReminderJob] Không có tái khám nào trong 3 ngày tới.");
+            logger.info("[ReminderJob] Không có tái khám nào trong 3 ngày tới.");
             return;
         }
 
-        console.log(`[ReminderJob] Xử lý ${results.length} tái khám...`);
+        logger.info(`[ReminderJob] Xử lý ${results.length} tái khám...`);
 
         for (const result of results) {
             // patientId trong ExamResult là User._id (ref: "User")
@@ -104,19 +105,19 @@ export const sendNextDateReminders = async () => {
 
             // 4. Đánh dấu đã gửi
             await ExamResult.findByIdAndUpdate(result._id, { reminderSent: true });
-            console.log(`[ReminderJob] ✓ ${patientUser?.email || String(patientUserId)}`);
+            logger.info(`[ReminderJob] Sent reminder to ${patientUser?.email || String(patientUserId)}`);
         }
 
-        console.log("[ReminderJob] Hoàn tất.");
+        logger.info("[ReminderJob] Hoàn tất.");
     } catch (err) {
-        console.error("[ReminderJob] Lỗi:", err.message);
+        logger.error(`[ReminderJob] Lỗi: ${err.message}`);
     }
 };
 
 // Cron: 08:00 mỗi ngày giờ VN
 cron.schedule("0 8 * * *", () => {
-    console.log("[ReminderJob] Bắt đầu kiểm tra...");
+    logger.info("[ReminderJob] Bắt đầu kiểm tra...");
     sendNextDateReminders();
 }, { timezone: "Asia/Ho_Chi_Minh" });
 
-console.log("[ReminderJob] Đã khởi tạo — chạy lúc 08:00 mỗi ngày.");
+logger.info("[ReminderJob] Đã khởi tạo — chạy lúc 08:00 mỗi ngày.");

@@ -10,7 +10,7 @@ DentaCare là hệ thống quản lý phòng khám nha khoa full-stack gồm 3 s
 
 - **Frontend:** React 19, Vite, Tailwind CSS v4, shadcn/ui, React Router v7, Axios, Socket.io-client, Recharts, Sonner, Lucide React
 - **Backend:** Node.js, Express.js, MongoDB, Mongoose, JWT (access+refresh), Socket.io, LangChain, Google Gemini, Nodemailer, Winston, Joi, node-cron
-- **AI Service:** Python FastAPI, Motor (async MongoDB), Google Generative AI, LangChain
+- **AI Service:** Python FastAPI, Motor (async MongoDB), Google Generative AI, LangChain, Uvicorn (port 8000) — Node.js chỉ proxy request sang AI service, không chạy RAG trực tiếp
 - Không thêm TypeScript vào bất kỳ layer nào
 - Không thêm Redux hoặc thư viện state management khác — chỉ dùng React Context API
 - Không dùng SQL — chỉ MongoDB + Mongoose
@@ -210,10 +210,13 @@ Re-export từ `client/src/api/index.js`.
 
 ## 8. Lưu ý bổ sung
 
-- **Logging:** Dùng `logger` (Winston) thay cho `console.log` trong server code
+- **Logging:** Dùng `logger` (Winston) thay cho `console.log` trong server code — Python AI service dùng `print()` cho logging
 - **Rate limiting:** Đã áp dụng toàn cục trong `server/src/index.js` — không tạo rate limiter riêng
+- **Security headers:** Helmet đã được cấu hình trong `server/src/index.js` — không thêm middleware bảo mật riêng
 - **Upload file:** Dùng middleware từ `uploadMiddleware.js` — không dùng Multer trực tiếp
 - **Cron jobs:** Thêm vào `server/src/jobs/`, import vào `server/src/index.js`, dùng `node-cron`
+- **Pagination:** Dùng `page`/`limit` query params (default limit=20, max=100); trả về `{ data, total, page, totalPages }` — xem `getAllPatients` trong `admin.controller.js` làm mẫu
+- **Tests:** Pattern dùng `jest.unstable_mockModule` (ESM), chainable mock helper — xem `appointment.controller.test.js` làm mẫu; mock path tính từ vị trí file TEST (không phải file được test)
 - **Roles hợp lệ:** `patient`, `doctor`, `admin` — không thêm role mới
 - **Trạng thái appointment:** `pending`, `confirmed`, `rescheduled`, `in_progress`, `completed`, `cancelled`
 - **Format time:** Giờ dùng chuỗi `"HH:MM"` (ví dụ `"08:00"`), ngày dùng `Date` object hoặc ISO string

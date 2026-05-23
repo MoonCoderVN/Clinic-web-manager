@@ -13,7 +13,6 @@ import connectDB from "./config/db.js";
 import "./jobs/expiredAppointmentJob.js";
 import "./jobs/nextDateReminderJob.js";
 import "./jobs/appointmentReminderJob.js";
-import seedAdmin from "./config/seedAdmin.js";
 import { UPLOADS_DIR, ensureUploadDirs } from "./config/uploadPaths.js";
 import { notFound, errorHandler } from "./middlewares/errorHandler.js";
 import { apiLimiter, publicLimiter } from "./middlewares/rateLimit.js";
@@ -52,7 +51,7 @@ ensureUploadDirs();
 startAIService();
 
 // Kết nối DB rồi seed admin
-connectDB().then(() => seedAdmin());
+connectDB();
 
 const allowedOrigins = [process.env.CLIENT_URL, "http://localhost:5173", "http://localhost:5174"];
 configureSocket(server, allowedOrigins);
@@ -106,7 +105,6 @@ app.use(errorHandler);
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
     logger.info(`Server running on port ${PORT}`);
-    console.log(`Server running on port ${PORT}`);
 });
 
 process.on("SIGINT", () => {

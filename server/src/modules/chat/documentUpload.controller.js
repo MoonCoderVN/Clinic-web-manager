@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { createRequire } from "module";
+import logger from "../../utils/logger.js";
 import KnowledgeDocument from "./knowledgeDocument.model.js";
 import Knowledge from "./knowledge.model.js";
 import apiResponse from "../../utils/apiResponse.js";
@@ -291,7 +292,7 @@ async function processFileAsync(docRecord, filePath, fileName, category, { repla
     try {
         let rawText = "";
 
-        console.log(`📄 Processing file: "${fileName}" (ext: ${ext})`);
+        logger.info(`[DocumentUpload] Processing file: "${fileName}" (ext: ${ext})`);
 
         if (ext === ".pdf") {
             rawText = await parsePdf(filePath);
@@ -338,9 +339,9 @@ async function processFileAsync(docRecord, filePath, fileName, category, { repla
         docRecord.chunksCreated = chunks.length;
         await docRecord.save();
 
-        console.log(`✅ Xong "${fileName}": ${chunks.length} đoạn đã thêm vào Knowledge base`);
+        logger.info(`[DocumentUpload] Xong "${fileName}": ${chunks.length} đoạn đã thêm vào Knowledge base`);
     } catch (err) {
-        console.error(`❌ Lỗi xử lý "${fileName}":`, err.message);
+        logger.error(`[DocumentUpload] Lỗi xử lý "${fileName}": ${err.message}`);
         docRecord.status = "failed";
         docRecord.errorMessage = err.message;
         await docRecord.save();
@@ -349,7 +350,7 @@ async function processFileAsync(docRecord, filePath, fileName, category, { repla
 
 async function processSheetAsync(docRecord, csvUrls, fallbackCategory, { replaceExisting = true } = {}) {
     try {
-        console.log(`Processing Google Sheet source: "${docRecord.sourceUrl}"`);
+        logger.info(`[DocumentUpload] Processing Google Sheet source: "${docRecord.sourceUrl}"`);
 
         const csvText = await readPublicSheetCsv(csvUrls);
         const rows = parseSheetRows(csvText, SHEET_CATEGORIES.has(fallbackCategory) ? fallbackCategory : "general");
@@ -381,9 +382,9 @@ async function processSheetAsync(docRecord, csvUrls, fallbackCategory, { replace
         docRecord.errorMessage = "";
         await docRecord.save();
 
-        console.log(`Done Google Sheet "${docRecord.sourceUrl}": ${insertedDocs.length} rows indexed`);
+        logger.info(`[DocumentUpload] Done Google Sheet "${docRecord.sourceUrl}": ${insertedDocs.length} rows indexed`);
     } catch (err) {
-        console.error(`Google Sheet sync failed "${docRecord.sourceUrl}":`, err.message);
+        logger.error(`[DocumentUpload] Google Sheet sync failed "${docRecord.sourceUrl}": ${err.message}`);
         docRecord.status = "failed";
         docRecord.errorMessage = err.message;
         await docRecord.save();

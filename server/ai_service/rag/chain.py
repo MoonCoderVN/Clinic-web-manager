@@ -81,8 +81,8 @@ async def _build_page_context_hint(page_context: dict | None) -> str:
                     f"[Ngữ cảnh trang]: Người dùng đang xem hồ sơ BS {name} ({spec}).{exp}{rating}{svc_str}\n"
                     f"Ưu tiên trả lời câu hỏi liên quan đến bác sĩ này."
                 )
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[chain] _build_page_context_hint error: {e}")
 
     hints = {
         "home": "Người dùng đang ở trang chủ phòng khám.",
