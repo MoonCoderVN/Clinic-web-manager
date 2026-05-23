@@ -452,7 +452,7 @@ export const createAppointment = async (req, res, next) => {
 // ──────────────────────────────────────────────────────────────────
 export const getMyAppointments = async (req, res, next) => {
     try {
-        const { status } = req.query;
+        const { status, page = 1, limit = 20 } = req.query;
         let filter = {};
 
         if (req.user.role === "patient") {
@@ -469,13 +469,25 @@ export const getMyAppointments = async (req, res, next) => {
 
         if (status && status !== "all") filter.status = status;
 
-        const appointments = await Appointment.find(filter)
-            .populate("patientId", "fullName phone email avatar")
-            .populate({ path: "doctorId", populate: { path: "userId", select: "fullName email phone avatar" } })
-            .populate("serviceId", "name price duration")
-            .sort({ appointmentDate: -1, date: -1, createdAt: -1 });
+        const pageNum  = Math.max(1, parseInt(page));
+        const limitNum = Math.min(100, parseInt(limit) || 20);
+        const skip     = (pageNum - 1) * limitNum;
 
-        return apiResponse(res, 200, "Lấy danh sách lịch hẹn thành công", appointments);
+        const [appointments, total] = await Promise.all([
+            Appointment.find(filter)
+                .populate("patientId", "fullName phone email avatar")
+                .populate({ path: "doctorId", populate: { path: "userId", select: "fullName email phone avatar" } })
+                .populate("serviceId", "name price duration")
+                .sort({ appointmentDate: -1, date: -1, createdAt: -1 })
+                .skip(skip)
+                .limit(limitNum),
+            Appointment.countDocuments(filter),
+        ]);
+
+        return apiResponse(res, 200, "Lấy danh sách lịch hẹn thành công", {
+            appointments,
+            pagination: { page: pageNum, limit: limitNum, total, totalPages: Math.ceil(total / limitNum), hasNext: pageNum * limitNum < total },
+        });
     } catch (error) {
         next(error);
     }
@@ -864,14 +876,17 @@ export const checkInAppointment = async (req, res, next) => {
 // ──────────────────────────────────────────────────────────────────
 export const getAllAppointments = async (req, res, next) => {
     try {
-        const { status, doctorId, patientId } = req.query;
+        const { status, doctorId, patientId, page = 1, limit = 20 } = req.query;
         const filter = {};
         if (status && status !== "all") filter.status = status;
 
         if (req.user.role === "doctor") {
             const doctorProfile = await Doctor.findOne({ userId: req.user.id }).select("_id").lean();
             if (!doctorProfile) {
-                return apiResponse(res, 200, "Lấy danh sách lịch hẹn thành công", []);
+                return apiResponse(res, 200, "Lấy danh sách lịch hẹn thành công", {
+                    appointments: [],
+                    pagination: { page: 1, limit: 20, total: 0, totalPages: 0, hasNext: false },
+                });
             }
             filter.doctorId = doctorProfile._id;
         } else {
@@ -879,13 +894,25 @@ export const getAllAppointments = async (req, res, next) => {
             if (patientId) filter.patientId = patientId;
         }
 
-        const appointments = await Appointment.find(filter)
-            .populate("patientId", "fullName phone email")
-            .populate({ path: "doctorId", populate: { path: "userId", select: "fullName specialization" } })
-            .populate("serviceId", "name price")
-            .sort({ appointmentDate: -1, date: -1, createdAt: -1 });
+        const pageNum  = Math.max(1, parseInt(page));
+        const limitNum = Math.min(100, parseInt(limit) || 20);
+        const skip     = (pageNum - 1) * limitNum;
 
-        return apiResponse(res, 200, "Lấy danh sách lịch hẹn thành công", appointments);
+        const [appointments, total] = await Promise.all([
+            Appointment.find(filter)
+                .populate("patientId", "fullName phone email")
+                .populate({ path: "doctorId", populate: { path: "userId", select: "fullName specialization" } })
+                .populate("serviceId", "name price")
+                .sort({ appointmentDate: -1, createdAt: -1 })
+                .skip(skip)
+                .limit(limitNum),
+            Appointment.countDocuments(filter),
+        ]);
+
+        return apiResponse(res, 200, "Lấy danh sách lịch hẹn thành công", {
+            appointments,
+            pagination: { page: pageNum, limit: limitNum, total, totalPages: Math.ceil(total / limitNum), hasNext: pageNum * limitNum < total },
+        });
     } catch (error) {
         next(error);
     }

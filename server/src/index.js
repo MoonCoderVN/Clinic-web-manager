@@ -1,5 +1,6 @@
 import express from "express";
 import cors from "cors";
+import helmet from "helmet";
 import dotenv from "dotenv";
 import http from "http";
 
@@ -55,6 +56,7 @@ connectDB().then(() => seedAdmin());
 
 const allowedOrigins = [process.env.CLIENT_URL, "http://localhost:5173", "http://localhost:5174"];
 configureSocket(server, allowedOrigins);
+app.use(helmet());
 app.use(cors({
   origin: function (origin, callback) {
     if (!origin || allowedOrigins.includes(origin)) {
