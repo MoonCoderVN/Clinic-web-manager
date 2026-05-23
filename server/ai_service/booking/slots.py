@@ -33,7 +33,7 @@ async def _is_doctor_off(doctor_user_id, date_str: str) -> bool:
     return result is not None
 
 
-async def get_available_slots_for_booking(date_str: str, service_id: str) -> list[dict]:
+async def get_available_slots_for_booking(date_str: str, service_id: str, doctor_id: str | None = None) -> list[dict]:
     y, m, d = map(int, date_str.split("-"))
     target_date = date(y, m, d)
     today = date.today()
@@ -60,7 +60,13 @@ async def get_available_slots_for_booking(date_str: str, service_id: str) -> lis
     col_sch = schedule_col()
     col_appt = appointment_col()
 
-    doctors = await col_doc.find({"services": svc_id}).to_list(length=50)
+    doctor_filter: dict = {"services": svc_id}
+    if doctor_id:
+        try:
+            doctor_filter["_id"] = ObjectId(doctor_id)
+        except Exception:
+            pass
+    doctors = await col_doc.find(doctor_filter).to_list(length=100)
     result = []
 
     day_start = datetime(y, m, d, 0, 0, 0)

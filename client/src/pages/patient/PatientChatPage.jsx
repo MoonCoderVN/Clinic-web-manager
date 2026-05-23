@@ -86,7 +86,7 @@ export default function PatientChatPage() {
     setLoading(true);
 
     try {
-      const response = await axiosInstance.post("/chat", { message: messageToSend, sessionId });
+      const response = await axiosInstance.post("/chat", { message: messageToSend, sessionId, pageContext: { page: "ai_chat" } });
       const resData = response.data.data || response.data;
       if (!sessionId && resData.sessionId) setSessionId(resData.sessionId);
       setMessages((prev) => [

@@ -94,6 +94,7 @@ class PublicChatRequest(BaseModel):
     message: str
     history: list = []
     bookingContext: dict | None = None
+    pageContext: dict | None = None
 
     @field_validator("message")
     @classmethod
@@ -118,8 +119,9 @@ async def _stream_rag(
     history: list,
     user_context: str,
     intent: dict,
+    page_context: dict | None = None,
 ) -> AsyncIterator[str]:
-    async for event in run_rag_chain_stream(message, history, user_context, intent):
+    async for event in run_rag_chain_stream(message, history, user_context, intent, page_context):
         yield _sse_line(event)
 
 
@@ -147,7 +149,7 @@ async def public_chat(body: PublicChatRequest, request: Request):
         return {"data": result}
 
     history = _safe_history(body.history)
-    result = await run_rag_chain(body.message, history, "", intent)
+    result = await run_rag_chain(body.message, history, "", intent, body.pageContext)
     return {"data": result}
 
 
@@ -173,7 +175,7 @@ async def public_chat_stream(body: PublicChatRequest, request: Request):
     history = _safe_history(body.history)
 
     return StreamingResponse(
-        _stream_rag(body.message, history, "", intent),
+        _stream_rag(body.message, history, "", intent, body.pageContext),
         media_type="text/event-stream; charset=utf-8",
     )
 
@@ -202,7 +204,7 @@ async def auth_chat(
 
     user_context = await _build_user_context(x_user_id) if x_user_id else ""
     history = _safe_history(body.history)
-    result = await run_rag_chain(body.message, history, user_context, intent)
+    result = await run_rag_chain(body.message, history, user_context, intent, body.pageContext)
     return {"data": result}
 
 
@@ -226,6 +228,6 @@ async def auth_chat_stream(
     history = _safe_history(body.history)
 
     return StreamingResponse(
-        _stream_rag(body.message, history, user_context, intent),
+        _stream_rag(body.message, history, user_context, intent, body.pageContext),
         media_type="text/event-stream; charset=utf-8",
     )

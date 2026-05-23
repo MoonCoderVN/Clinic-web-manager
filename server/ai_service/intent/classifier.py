@@ -55,6 +55,16 @@ def _has_time_period_signal(text: str) -> bool:
     return bool(re.search(r"(sang|buoi sang|chieu|buoi chieu|toi|buoi toi|morning|afternoon|evening)", text))
 
 
+def _has_clinic_info_signal(text: str) -> bool:
+    return bool(re.search(
+        r"(dia chi|so dien thoai|lien he|gio lam viec|gio mo cua|gio dong cua|"
+        r"mo cua luc|dong cua luc|ngay lam viec|thu may|lam viec thu|"
+        r"o dau|nam o dau|phong kham o|phong kham dau|"
+        r"email|hotline|duong day nong|website|fanpage)",
+        text,
+    ))
+
+
 def _has_doctor_name_hint(text: str, message: str) -> bool:
     match = re.search(r"\b(?:bac si|bs)\s+[a-zA-ZÀ-ỹ]{2,}", message, re.IGNORECASE)
     has_list_signal = bool(re.search(r"(bac si nao|danh sach bac si|doi ngu bac si)", text))
@@ -70,12 +80,14 @@ def classify_intent(message: str, booking_context: dict | None = None) -> dict:
             "intent": "BOOKING_FLOW",
             "wantsDoctorInfo": False,
             "wantsServiceInfo": False,
+            "wantsClinicInfo": False,
             "bookingAction": True,
             "hasSpecificEntities": False,
         }
 
     wants_doctor_info = _has_doctor_info_signal(text)
     wants_service_info = _has_service_info_signal(text)
+    wants_clinic_info = _has_clinic_info_signal(text)
     booking_action = _has_booking_action_signal(text)
     specific_date = _has_relative_date_signal(text)
     specific_period = _has_time_period_signal(text)
@@ -88,6 +100,7 @@ def classify_intent(message: str, booking_context: dict | None = None) -> dict:
             "intent": "BOOKING_FLOW",
             "wantsDoctorInfo": wants_doctor_info,
             "wantsServiceInfo": wants_service_info,
+            "wantsClinicInfo": wants_clinic_info,
             "bookingAction": True,
             "hasSpecificEntities": False,
         }
@@ -98,14 +111,15 @@ def classify_intent(message: str, booking_context: dict | None = None) -> dict:
             "intent": "BOOKING_FLOW",
             "wantsDoctorInfo": wants_doctor_info,
             "wantsServiceInfo": wants_service_info,
+            "wantsClinicInfo": wants_clinic_info,
             "bookingAction": True,
             "hasSpecificEntities": False,
         }
 
     if booking_action and has_specific_entities and (wants_doctor_info or wants_service_info):
-        return {"intent": "MIXED", "wantsDoctorInfo": wants_doctor_info, "wantsServiceInfo": wants_service_info, "bookingAction": booking_action, "hasSpecificEntities": has_specific_entities}
+        return {"intent": "MIXED", "wantsDoctorInfo": wants_doctor_info, "wantsServiceInfo": wants_service_info, "wantsClinicInfo": wants_clinic_info, "bookingAction": booking_action, "hasSpecificEntities": has_specific_entities}
 
     if booking_action and has_specific_entities:
-        return {"intent": "BOOKING_CHECK", "wantsDoctorInfo": wants_doctor_info, "wantsServiceInfo": wants_service_info, "bookingAction": booking_action, "hasSpecificEntities": has_specific_entities}
+        return {"intent": "BOOKING_CHECK", "wantsDoctorInfo": wants_doctor_info, "wantsServiceInfo": wants_service_info, "wantsClinicInfo": wants_clinic_info, "bookingAction": booking_action, "hasSpecificEntities": has_specific_entities}
 
-    return {"intent": "QUERY_INFO", "wantsDoctorInfo": wants_doctor_info, "wantsServiceInfo": wants_service_info, "bookingAction": booking_action, "hasSpecificEntities": has_specific_entities}
+    return {"intent": "QUERY_INFO", "wantsDoctorInfo": wants_doctor_info, "wantsServiceInfo": wants_service_info, "wantsClinicInfo": wants_clinic_info, "bookingAction": booking_action, "hasSpecificEntities": has_specific_entities}

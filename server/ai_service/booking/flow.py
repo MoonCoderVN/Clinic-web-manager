@@ -2,7 +2,7 @@ import re
 import unicodedata
 from datetime import date, timedelta
 from urllib.parse import quote
-from db.mongo import service_col
+from db.mongo import service_col, doctor_col
 from booking.slots import get_available_slots_for_booking
 
 _DATE_PAGE_SIZE = 5
@@ -13,6 +13,10 @@ def _normalize(text: str) -> str:
     normalized = unicodedata.normalize("NFD", text)
     without_diacritics = "".join(c for c in normalized if unicodedata.category(c) != "Mn")
     return without_diacritics.replace("đ", "d").replace("Đ", "D").lower()
+
+
+def _strip_bs(name: str) -> str:
+    return re.sub(r'^BS\.\s*', '', name).strip()
 
 
 def _has_cancel_signal(text: str) -> bool:
@@ -63,39 +67,20 @@ def _parse_date_from_text(text: str) -> str | None:
 
 
 def _parse_time_from_text(text: str) -> str | None:
-    # Thử format HH:MM trước (vd: 14:00, 9:30)
     m = re.search(r"\b(\d{1,2}):(\d{2})\b", text)
     if m:
         h, mn = int(m.group(1)), int(m.group(2))
         if 0 <= h <= 23:
             return f"{h:02d}:{mn:02d}"
-    # Thử "Xh[MM]" hoặc "X giờ [MM]" — có thể có space trước h/gio
     m = re.search(r"\b(\d{1,2})\s*(?:h|gio)\s*(\d{0,2})", text)
     if m:
         h = int(m.group(1))
         mn = int(m.group(2) or 0)
-        # Quy đổi chiều/tối → +12 giờ (chieu/toi sau khi normalize)
         if re.search(r"\b(chieu|toi)\b", text) and h < 12:
             h += 12
         if 0 <= h <= 23:
             return f"{h:02d}:{mn:02d}"
     return None
-
-
-def _match_slot_from_text(text: str, slots: list) -> dict | None:
-    time_hint = _parse_time_from_text(text)
-    name_parts = [p for p in text.split() if len(p) >= 3]
-    filtered = slots
-    if time_hint:
-        filtered = [s for s in filtered if s["time"] == time_hint]
-    if name_parts:
-        name_filtered = [
-            s for s in filtered
-            if any(p in _normalize(s["doctorName"]) for p in name_parts)
-        ]
-        if name_filtered:
-            filtered = name_filtered
-    return filtered[0] if len(filtered) == 1 else None
 
 
 def _match_service_from_text(text: str, services: list) -> dict | None:
@@ -104,6 +89,34 @@ def _match_service_from_text(text: str, services: list) -> dict | None:
         if any(len(p) >= 3 and p in text for p in _normalize(s["name"]).split())
     ]
     return matched[0] if len(matched) == 1 else None
+
+
+def _match_doctor_from_text(text: str, doctors: list[dict]) -> dict | None:
+    name_parts = [p for p in text.split() if len(p) >= 3]
+    if not name_parts:
+        return None
+    matched = [
+        d for d in doctors
+        if any(p in _normalize(d.get("userInfo", {}).get("fullName", "")) for p in name_parts)
+    ]
+    return matched[0] if len(matched) == 1 else None
+
+
+async def _get_doctors_for_service(service_id: str) -> list[dict]:
+    from bson import ObjectId
+    try:
+        svc_id = ObjectId(service_id)
+    except Exception:
+        return []
+    col_doc = doctor_col()
+    pipeline = [
+        {"$match": {"services": svc_id}},
+        {"$lookup": {"from": "users", "localField": "userId", "foreignField": "_id", "as": "userInfo"}},
+        {"$unwind": "$userInfo"},
+        {"$match": {"userInfo.isActive": True}},
+        {"$project": {"_id": 1, "specialization": 1, "experience": 1, "userInfo.fullName": 1}},
+    ]
+    return await col_doc.aggregate(pipeline).to_list(length=100)
 
 
 def _generate_date_options(page: int = 0) -> list[dict]:
@@ -177,14 +190,62 @@ async def conduct_booking_flow(message: str, ctx: dict | None, is_authenticated:
                     {
                         "label": s["name"],
                         "value": s["name"],
-                        "bookingData": {"serviceId": str(s["_id"]), "serviceName": s["name"], "step": "date_select"},
+                        "bookingData": {"serviceId": str(s["_id"]), "serviceName": s["name"], "step": "doctor_select"},
                     }
                     for s in services
                 ],
                 "bookingAssist": {"step": "service_select"},
             }
 
-    # Step 2: No date selected
+    # Step 2: No doctor selected — show all doctors for the chosen service
+    if not ctx.get("doctorId"):
+        doctors = await _get_doctors_for_service(ctx["serviceId"])
+
+        if not doctors:
+            return {
+                "answer": (
+                    f"Rất tiếc, hiện chưa có bác sĩ nào thực hiện dịch vụ **{ctx.get('serviceName', '')}**. "
+                    "Vui lòng liên hệ phòng khám để được hỗ trợ."
+                ),
+                "sources": [],
+                "uiState": "done",
+                "quickReplies": [
+                    {"label": "Bắt đầu lại", "value": "Tôi muốn đặt lịch", "bookingData": {"reset": True}},
+                ],
+                "bookingAssist": {"step": "doctor_select", **ctx},
+            }
+
+        matched_doc = _match_doctor_from_text(text, doctors)
+        if matched_doc:
+            ctx = {
+                **ctx,
+                "doctorId": str(matched_doc["_id"]),
+                "doctorName": _strip_bs(matched_doc.get("userInfo", {}).get("fullName", "Bác sĩ")),
+            }
+        else:
+            quick_replies = []
+            for d in doctors:
+                name = _strip_bs(d.get("userInfo", {}).get("fullName", "Bác sĩ"))
+                spec = d.get("specialization", "")
+                label = f"BS. {name}" + (f" — {spec}" if spec else "")
+                quick_replies.append({
+                    "label": label,
+                    "value": name,
+                    "bookingData": {
+                        "doctorId": str(d["_id"]),
+                        "doctorName": name,
+                        "step": "date_select",
+                    },
+                })
+            return {
+                "answer": f"Chọn bác sĩ cho dịch vụ **{ctx.get('serviceName', '')}**:",
+                "sources": [],
+                "uiState": "done",
+                "quickReplies": quick_replies,
+                "bookingAssist": {"step": "doctor_select", **ctx},
+            }
+
+    # Step 3: No date selected
     if not ctx.get("date"):
         parsed_date = _parse_date_from_text(text)
         if parsed_date:
@@ -193,7 +254,7 @@ async def conduct_booking_flow(message: str, ctx: dict | None, is_authenticated:
             page = ctx.get("datePage") or 0
             return {
                 "answer": (
-                    f"Dịch vụ **{ctx.get('serviceName', '')}** đã được chọn. "
+                    f"Bác sĩ **{ctx.get('doctorName', '')}** đã được chọn. "
                     "Bạn muốn đặt khám vào ngày nào?\n_Hoặc gõ ngày cụ thể (vd: 28/05, thứ 2 tuần sau)_"
                 ),
                 "sources": [],
@@ -202,14 +263,16 @@ async def conduct_booking_flow(message: str, ctx: dict | None, is_authenticated:
                 "bookingAssist": {"step": "date_select", **ctx},
             }
 
-    # Step 3: No time selected — show available time slots
+    # Step 4: No time selected — show available slots for the chosen doctor
     if not ctx.get("startTime"):
-        all_slots = await get_available_slots_for_booking(ctx["date"], ctx["serviceId"])
+        all_slots = await get_available_slots_for_booking(
+            ctx["date"], ctx["serviceId"], doctor_id=ctx.get("doctorId")
+        )
 
         if not all_slots:
             return {
                 "answer": (
-                    f"Rất tiếc, không có lịch trống nào cho dịch vụ **{ctx.get('serviceName', '')}** "
+                    f"Rất tiếc, bác sĩ **{ctx.get('doctorName', '')}** không có lịch trống "
                     f"vào **{_format_date_vn(ctx['date'])}**. Bạn muốn chọn ngày khác không?"
                 ),
                 "sources": [],
@@ -221,80 +284,30 @@ async def conduct_booking_flow(message: str, ctx: dict | None, is_authenticated:
                 "bookingAssist": {"step": "time_select", **ctx},
             }
 
-        # Deduplicate times while preserving order
-        seen: set[str] = set()
-        unique_times: list[str] = []
-        for s in all_slots:
-            if s["time"] not in seen:
-                seen.add(s["time"])
-                unique_times.append(s["time"])
+        unique_times = list(dict.fromkeys(s["time"] for s in all_slots))
 
-        # Free-text: user typed a time like "8h"
         time_hint = _parse_time_from_text(text)
-        if time_hint and time_hint in seen:
+        if time_hint and time_hint in unique_times:
             ctx = {**ctx, "startTime": time_hint}
         else:
             quick_replies = [
                 {
                     "label": t,
                     "value": t,
-                    "bookingData": {"startTime": t, "step": "doctor_select"},
+                    "bookingData": {"startTime": t, "step": "confirm"},
                 }
                 for t in unique_times[:12]
             ]
             return {
                 "answer": (
-                    f"Chọn giờ khám vào **{_format_date_vn(ctx['date'])}**:\n"
+                    f"Chọn giờ khám với bác sĩ **{ctx.get('doctorName', '')}** "
+                    f"vào **{_format_date_vn(ctx['date'])}**:\n"
                     "_Hoặc gõ giờ cụ thể (vd: 8h, 14:30)_"
                 ),
                 "sources": [],
                 "uiState": "done",
                 "quickReplies": quick_replies,
                 "bookingAssist": {"step": "time_select", **ctx},
-            }
-
-    # Step 4: No doctor selected — filter by chosen time, show doctors
-    if not ctx.get("doctorId"):
-        all_slots = await get_available_slots_for_booking(ctx["date"], ctx["serviceId"])
-        time_slots = [s for s in all_slots if s["time"] == ctx["startTime"]]
-
-        if not time_slots:
-            return {
-                "answer": (
-                    f"Rất tiếc, không còn lịch trống lúc **{ctx['startTime']}** "
-                    f"ngày **{_format_date_vn(ctx['date'])}**. Bạn muốn chọn giờ khác không?"
-                ),
-                "sources": [],
-                "uiState": "done",
-                "quickReplies": [
-                    {"label": "Chọn giờ khác", "value": "Chọn giờ khác", "bookingData": {"startTime": None, "step": "time_select"}},
-                    {"label": "Bắt đầu lại", "value": "Tôi muốn đặt lịch", "bookingData": {"reset": True}},
-                ],
-                "bookingAssist": {"step": "doctor_select", **ctx},
-            }
-
-        matched_slot = _match_slot_from_text(text, time_slots)
-        if matched_slot:
-            ctx = {**ctx, "doctorId": matched_slot["doctorId"], "doctorName": matched_slot["doctorName"]}
-        else:
-            quick_replies: list[dict] = [
-                {
-                    "label": f"BS. {s['doctorName']}",
-                    "value": f"BS. {s['doctorName']}",
-                    "bookingData": {
-                        "doctorId": s["doctorId"],
-                        "doctorName": s["doctorName"],
-                        "step": "confirm",
-                    },
-                }
-                for s in time_slots
-            ]
-            return {
-                "answer": f"Chọn bác sĩ khám lúc **{ctx['startTime']}** ngày **{_format_date_vn(ctx['date'])}**:",
-                "sources": [],
-                "uiState": "done",
-                "quickReplies": quick_replies,
-                "bookingAssist": {"step": "doctor_select", **ctx},
             }
 
     # Step 5: Confirm booking

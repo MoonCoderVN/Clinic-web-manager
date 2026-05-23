@@ -386,7 +386,7 @@ export default function AdminAppointmentsPage() {
                     // Task 11: dùng đúng field names từ populated response
                     const patientName = apt.patientId?.fullName || "—";
                     const patientPhone = apt.patientId?.phone || "—";
-                    const doctorName = apt.doctorId?.userId?.fullName || "—";
+                    const doctorName = (apt.doctorId?.userId?.fullName || "—").replace(/^BS\.\s*/i, "").trim();
                     const serviceName = apt.serviceId?.name || "—";
                     const apptDate = apt.appointmentDate || apt.date;
                     const overdue = isAppointmentOverdue(apt);
@@ -630,7 +630,7 @@ export default function AdminAppointmentsPage() {
                 <div>
                   <p className="text-sm text-muted-foreground">Bác sĩ</p>
                   <p className="font-medium">
-                    BS. {selectedAppointment.doctorId?.userId?.fullName || "—"}
+                    BS. {(selectedAppointment.doctorId?.userId?.fullName || "—").replace(/^BS\.\s*/i, "").trim()}
                   </p>
                 </div>
                 <div>

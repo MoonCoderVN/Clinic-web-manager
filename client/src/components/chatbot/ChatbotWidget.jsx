@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from "react";
+import { useLocation, useParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
@@ -10,11 +11,6 @@ import { cn } from "@/lib/utils";
 import axiosInstance from "@/api/httpClient";
 import { renderMarkdownText } from "@/utils/renderMarkdownText";
 
-const suggestedQuestions = [
-  "Tôi muốn đặt lịch khám",
-  "Chi phí niềng răng?",
-  "Bác sĩ nào sáng thứ 2 có lịch?",
-];
 
 const initialMessages = [
   {
@@ -34,12 +30,12 @@ const streamStatusText = {
 
 const getApiUrl = (path) => `${axiosInstance.defaults.baseURL || ""}${path}`;
 
-async function readChatStream(path, message, history = [], handlers = {}, signal, bookingContext = null, extraHeaders = {}) {
+async function readChatStream(path, message, history = [], handlers = {}, signal, bookingContext = null, extraHeaders = {}, pageContext = null) {
   const response = await fetch(getApiUrl(path), {
     method: "POST",
     headers: { "Content-Type": "application/json", ...extraHeaders },
     credentials: "include",
-    body: JSON.stringify({ message, history, ...(bookingContext ? { bookingContext } : {}) }),
+    body: JSON.stringify({ message, history, ...(bookingContext ? { bookingContext } : {}), ...(pageContext ? { pageContext } : {}) }),
     signal,
   });
   if (!response.ok || !response.body) throw new Error("STREAM_UNAVAILABLE");
@@ -82,6 +78,40 @@ export default function ChatbotWidget() {
   const inputRef = useRef(null);
   const activeRequestRef = useRef(null);
   const streamAbortRef = useRef(null);
+
+  const { pathname } = useLocation();
+  const params = useParams();
+
+  const buildPageContext = () => {
+    if (pathname === "/" || pathname === "") return { page: "home" };
+    if (pathname === "/services") return { page: "services_list" };
+    if (pathname === "/doctors") return { page: "doctors_list" };
+    if (pathname.startsWith("/doctors/") && params.id)
+      return { page: "doctor_detail", entityType: "doctor", entityId: params.id };
+    if (pathname === "/patient/book") return { page: "booking" };
+    if (pathname === "/patient/appointments") return { page: "appointments" };
+    if (pathname === "/patient/history") return { page: "history" };
+    if (pathname === "/patient/dashboard") return { page: "patient_dashboard" };
+    return { page: "other" };
+  };
+
+  const getSuggestedQuestions = () => {
+    const ctx = buildPageContext();
+    switch (ctx.page) {
+      case "doctor_detail":
+        return ["Bác sĩ này chuyên về gì?", "Đặt lịch với bác sĩ này", "Kinh nghiệm của bác sĩ?"];
+      case "services_list":
+        return ["Giá các dịch vụ là bao nhiêu?", "Dịch vụ nào phù hợp với tôi?", "Tôi cần dịch vụ nào?"];
+      case "booking":
+        return ["Hướng dẫn đặt lịch", "Tôi cần chuẩn bị gì trước khi khám?", "Đặt lịch gấp được không?"];
+      case "appointments":
+        return ["Lịch hẹn của tôi", "Hủy lịch hẹn như thế nào?", "Đổi lịch hẹn"];
+      case "history":
+        return ["Giải thích kết quả khám", "Khi nào cần tái khám?", "Chăm sóc sau điều trị"];
+      default:
+        return ["Phòng khám ở đâu?", "Xem bảng giá dịch vụ", "Đặt lịch khám"];
+    }
+  };
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -171,12 +201,12 @@ export default function ChatbotWidget() {
               };
             });
           },
-        }, controller.signal, activeBookingContext, authHeaders);
+        }, controller.signal, activeBookingContext, authHeaders, buildPageContext());
       } catch (streamError) {
         if (hasStreamToken) {
           throw streamError;
         }
-        const res = await axiosInstance.post(fallbackPath, { message: messageText, history, ...(activeBookingContext ? { bookingContext: activeBookingContext } : {}) });
+        const res = await axiosInstance.post(fallbackPath, { message: messageText, history, ...(activeBookingContext ? { bookingContext: activeBookingContext } : {}), pageContext: buildPageContext() });
         const data = res.data?.data || res.data || {};
         if (activeRequestRef.current !== requestId) return;
         if (data.bookingAssist?.step) {
@@ -397,7 +427,7 @@ export default function ChatbotWidget() {
             <div className="border-t bg-muted/30 px-4 py-3">
               <p className="mb-2 text-xs font-medium text-muted-foreground">Câu hỏi gợi ý:</p>
               <div className="flex flex-wrap gap-2">
-                {suggestedQuestions.map((q) => (
+                {getSuggestedQuestions().map((q) => (
                   <button
                     key={q}
                     onClick={() => handleSend(q)}

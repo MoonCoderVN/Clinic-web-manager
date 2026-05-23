@@ -10,14 +10,20 @@ services:
     depends_on:
       - mongo
     restart: unless-stopped
+    environment:
+      - AI_SERVICE_URL=http://ai_service:8000
 
   ai_service:
-    build: ./ai_service
+    build: ./server/ai_service
     ports:
       - "8000:8000"
     env_file:
-      - ./ai_service/.env
+      - ./server/ai_service/.env
+    depends_on:
+      - mongo
     restart: unless-stopped
+    environment:
+      - ALLOWED_ORIGINS=http://server:5002
 
   client:
     build: ./client

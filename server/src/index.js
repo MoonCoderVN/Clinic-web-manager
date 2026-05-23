@@ -34,6 +34,7 @@ import knowledgeRoutes from "./modules/chat/knowledge.route.js";
 import leaveRequestRoutes from "./modules/leaveRequest/leaveRequest.route.js";
 import { getPublicSettings } from "./modules/admin/settings.controller.js";
 import { configureSocket } from "./realtime/socket.js";
+import { startAIService, stopAIService } from "./services/aiServiceProcess.js";
 
 // ── Validate env TRƯỚC KHI khởi tạo bất cứ thứ gì ──────────────────────────
 const REQUIRED_ENV_VARS = ["MONGODB_URI", "JWT_SECRET", "JWT_REFRESH_SECRET", "MAIL_USER", "MAIL_PASS", "GEMINI_API_KEY"];
@@ -47,6 +48,7 @@ if (missingEnvVars.length > 0) {
 const app = express();
 const server = http.createServer(app);
 ensureUploadDirs();
+startAIService();
 
 // Kết nối DB rồi seed admin
 connectDB().then(() => seedAdmin());
@@ -103,4 +105,14 @@ const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
     logger.info(`Server running on port ${PORT}`);
     console.log(`Server running on port ${PORT}`);
+});
+
+process.on("SIGINT", () => {
+    stopAIService();
+    process.exit(0);
+});
+
+process.on("SIGTERM", () => {
+    stopAIService();
+    process.exit(0);
 });

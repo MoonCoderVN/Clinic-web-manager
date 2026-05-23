@@ -41,3 +41,7 @@ def appointment_col():
 
 def leave_request_col():
     return get_db()["leaverequests"]
+
+
+def settings_col():
+    return get_db()["settings"]

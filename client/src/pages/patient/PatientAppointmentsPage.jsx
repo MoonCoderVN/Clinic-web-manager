@@ -55,7 +55,10 @@ const STATUS_FILTERS = [
 const formatDate = (value) => (value ? new Date(value).toLocaleDateString("vi-VN") : "-");
 const getEffectiveDate = (appt) => appt.appointmentDate || appt.date;
 const getEffectiveTime = (appt) => appt.startTime || appt.timeSlot;
-const getDoctorName = (appt) => appt.doctorId?.userId?.fullName || appt.doctorId?.name || appt.doctorName || "Đang cập nhật";
+const getDoctorName = (appt) => {
+  const raw = appt.doctorId?.userId?.fullName || appt.doctorId?.name || appt.doctorName || "Đang cập nhật";
+  return raw.replace(/^BS\.\s*/i, "").trim();
+};
 const getServiceName = (appt) => appt.serviceId?.name || appt.serviceName || "Dịch vụ nha khoa";
 const formatCancelReason = (reason) => {
   if (!reason) return "";

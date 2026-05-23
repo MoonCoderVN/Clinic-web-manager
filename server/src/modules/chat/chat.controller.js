@@ -15,6 +15,8 @@ const normalizeText = (value = "") => value
     .replace(/[đĐ]/g, "d")
     .toLowerCase();
 
+const stripBS = (name) => (name || "").replace(/^BS\.\s*/gi, "").trim();
+
 const redactPIIForStorage = (value = "") => value
     .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[EMAIL_REDACTED]")
     .replace(/(?:\+?84|0)(?:\d[\s.-]?){8,10}\d/g, "[PHONE_REDACTED]")
@@ -53,10 +55,7 @@ const hasTimePeriodSignal = (text = "") =>
 const hasBookingFlowSignal = (text = "") =>
     /(muon dat|muon hen|cho.*dat|can dat lich|dat lich kham|ho tro dat|tu van dat lich|dang ky kham|dang ky lich|can kham|giup.*dat|huong dan dat|bat dau dat)/.test(text);
 
-// NOTE: Logic intent classification này mirror từ ai_service/intent/classifier.py (Python).
-// Lý do tồn tại ở hai nơi: Node.js xử lý routing inline nhanh (không cần qua HTTP),
-// Python xử lý booking wizard phức tạp với state machine qua AI service.
-// TODO: Refactor — tách thành shared rules dạng JSON/YAML để cả hai service đọc chung.
+
 const classifyChatIntent = (message = "", bookingContext = null) => {
     const text = normalizeText(message);
 
@@ -80,7 +79,7 @@ const classifyChatIntent = (message = "", bookingContext = null) => {
 
     // Fallback: booking intent không có entity cụ thể → bắt đầu wizard thu thập thông tin
     // Bắt các câu như "Giúp mình đặt lịch", "Mình cần đặt khám", "Còn slot không?"
-    // Mirror Python: ai_service/intent/classifier.py
+
     if (bookingAction && !hasSpecificEntities && !doctorNameHint) {
         return { intent: "BOOKING_FLOW", wantsDoctorInfo, wantsServiceInfo, bookingAction: true, hasSpecificEntities: false };
     }
@@ -506,9 +505,9 @@ const conductBookingFlow = async (message, bookingContext, isAuthenticated) => {
                 sources: [],
                 uiState: "done",
                 quickReplies: activeDoctors.slice(0, 10).map((d) => ({
-                    label: `BS. ${d.userId.fullName}`,
-                    value: `BS. ${d.userId.fullName}`,
-                    bookingData: { doctorId: d._id.toString(), doctorName: d.userId.fullName, step: "date_select" },
+                    label: `BS. ${stripBS(d.userId.fullName)}`,
+                    value: `BS. ${stripBS(d.userId.fullName)}`,
+                    bookingData: { doctorId: d._id.toString(), doctorName: stripBS(d.userId.fullName), step: "date_select" },
                 })),
                 bookingAssist: { step: "doctor_select", ...ctx },
             };
@@ -523,7 +522,7 @@ const conductBookingFlow = async (message, bookingContext, isAuthenticated) => {
         } else {
             const page = ctx.datePage || 0;
             return {
-                answer: `BS. **${ctx.doctorName}** — bạn muốn đặt khám vào ngày nào?\n_Hoặc gõ ngày cụ thể (vd: 28/05, thứ 2 tuần sau)_`,
+                answer: `BS. **${stripBS(ctx.doctorName)}** — bạn muốn đặt khám vào ngày nào?\n_Hoặc gõ ngày cụ thể (vd: 28/05, thứ 2 tuần sau)_`,
                 sources: [],
                 uiState: "done",
                 quickReplies: generateDateQuickReplies(page),
@@ -538,7 +537,7 @@ const conductBookingFlow = async (message, bookingContext, isAuthenticated) => {
 
         if (times.length === 0) {
             return {
-                answer: `Rất tiếc, **BS. ${ctx.doctorName}** không có lịch trống vào **${formatDateVN(ctx.date)}**. Bạn muốn thử ngày khác hoặc đổi bác sĩ?`,
+                answer: `Rất tiếc, **BS. ${stripBS(ctx.doctorName)}** không có lịch trống vào **${formatDateVN(ctx.date)}**. Bạn muốn thử ngày khác hoặc đổi bác sĩ?`,
                 sources: [],
                 uiState: "done",
                 quickReplies: [
@@ -555,7 +554,7 @@ const conductBookingFlow = async (message, bookingContext, isAuthenticated) => {
             ctx = { ...ctx, startTime: timeHint };
         } else {
             return {
-                answer: `Chọn giờ khám với **BS. ${ctx.doctorName}** vào **${formatDateVN(ctx.date)}**:\n_Hoặc gõ giờ cụ thể (vd: 8h, 14:30)_`,
+                answer: `Chọn giờ khám với **BS. ${stripBS(ctx.doctorName)}** vào **${formatDateVN(ctx.date)}**:\n_Hoặc gõ giờ cụ thể (vd: 8h, 14:30)_`,
                 sources: [],
                 uiState: "done",
                 quickReplies: times.slice(0, 12).map((t) => ({
@@ -575,7 +574,7 @@ const conductBookingFlow = async (message, bookingContext, isAuthenticated) => {
         answer: [
             `**Tóm tắt lịch hẹn:**`,
             `- Dịch vụ: **${ctx.serviceName}**`,
-            `- Bác sĩ: **BS. ${ctx.doctorName}**`,
+            `- Bác sĩ: **BS. ${stripBS(ctx.doctorName)}**`,
             `- Ngày: **${formatDateVN(ctx.date)}**`,
             `- Giờ: **${ctx.startTime}**`,
             ``,

@@ -1,17 +1,101 @@
 import re
+import time
 import unicodedata
 from typing import AsyncIterator
 import google.generativeai as genai
 from config import settings
 from rag.retriever import hybrid_retrieve
 from rag.prompts import build_prompt
-from db.mongo import service_col, doctor_col
+from db.mongo import service_col, doctor_col, settings_col
+
+_clinic_cache: dict = {"data": None, "ts": 0}
+_CLINIC_CACHE_TTL = 300
 
 
 def _normalize(text: str) -> str:
     normalized = unicodedata.normalize("NFD", text)
     without_diacritics = "".join(c for c in normalized if unicodedata.category(c) != "Mn")
     return without_diacritics.replace("đ", "d").replace("Đ", "D").lower()
+
+
+async def _build_clinic_context() -> str:
+    global _clinic_cache
+    now = time.monotonic()
+    if _clinic_cache["data"] is not None and (now - _clinic_cache["ts"]) < _CLINIC_CACHE_TTL:
+        return _clinic_cache["data"]
+
+    col = settings_col()
+    clinic = await col.find_one({"singleton": "clinic"})
+    if not clinic:
+        _clinic_cache = {"data": "", "ts": now}
+        return ""
+
+    lines = ["Thông tin phòng khám DentaCare:"]
+    if clinic.get("clinicName"):
+        lines.append(f"- Tên phòng khám: {clinic['clinicName']}")
+    if clinic.get("address"):
+        lines.append(f"- Địa chỉ: {clinic['address']}")
+    if clinic.get("phone"):
+        lines.append(f"- Số điện thoại: {clinic['phone']}")
+    if clinic.get("email"):
+        lines.append(f"- Email liên hệ: {clinic['email']}")
+    if clinic.get("openTime") and clinic.get("closeTime"):
+        lines.append(f"- Giờ làm việc: {clinic['openTime']} - {clinic['closeTime']}")
+    if clinic.get("workDays"):
+        lines.append(f"- Ngày làm việc: {clinic['workDays']}")
+    if clinic.get("description"):
+        lines.append(f"- Giới thiệu: {clinic['description']}")
+
+    result = "\n".join(lines) if len(lines) > 1 else ""
+    _clinic_cache = {"data": result, "ts": now}
+    return result
+
+
+async def _build_page_context_hint(page_context: dict | None) -> str:
+    if not page_context:
+        return ""
+    from bson import ObjectId
+    page = page_context.get("page", "")
+    entity_type = page_context.get("entityType", "")
+    entity_id = page_context.get("entityId", "")
+
+    if page == "doctor_detail" and entity_type == "doctor" and entity_id:
+        try:
+            col = doctor_col()
+            pipeline = [
+                {"$match": {"_id": ObjectId(entity_id)}},
+                {"$lookup": {"from": "users", "localField": "userId", "foreignField": "_id", "as": "userInfo"}},
+                {"$unwind": "$userInfo"},
+                {"$lookup": {"from": "services", "localField": "services", "foreignField": "_id", "as": "serviceInfo"}},
+            ]
+            docs = await col.aggregate(pipeline).to_list(length=1)
+            if docs:
+                d = docs[0]
+                name = d.get("userInfo", {}).get("fullName", "Bác sĩ")
+                spec = d.get("specialization", "")
+                exp = f" Kinh nghiệm: {d['experience']} năm." if isinstance(d.get("experience"), (int, float)) else ""
+                rating = f" Đánh giá: {d['rating']}/5." if isinstance(d.get("rating"), (int, float)) else ""
+                svcs = ", ".join(s["name"] for s in d.get("serviceInfo", []) if s.get("name"))
+                svc_str = f" Dịch vụ: {svcs}." if svcs else ""
+                return (
+                    f"[Ngữ cảnh trang]: Người dùng đang xem hồ sơ BS {name} ({spec}).{exp}{rating}{svc_str}\n"
+                    f"Ưu tiên trả lời câu hỏi liên quan đến bác sĩ này."
+                )
+        except Exception:
+            pass
+
+    hints = {
+        "home": "Người dùng đang ở trang chủ phòng khám.",
+        "services_list": "Người dùng đang xem danh sách dịch vụ nha khoa.",
+        "doctors_list": "Người dùng đang xem danh sách đội ngũ bác sĩ.",
+        "booking": "Người dùng đang ở trang đặt lịch khám — ưu tiên hỗ trợ đặt lịch.",
+        "appointments": "Người dùng đang xem quản lý lịch hẹn của mình.",
+        "history": "Người dùng đang xem lịch sử khám bệnh — hỗ trợ giải thích kết quả nếu cần.",
+        "ai_chat": "Người dùng đang dùng tính năng tư vấn AI chuyên sâu — có thể trả lời chi tiết hơn.",
+        "patient_dashboard": "Người dùng đang ở trang tổng quan bệnh nhân.",
+    }
+    hint = hints.get(page, "")
+    return f"[Ngữ cảnh trang]: {hint}" if hint else ""
 
 
 async def _build_service_context() -> str:
@@ -67,9 +151,17 @@ async def _build_doctor_context(message: str) -> str:
     return "\n".join(lines)
 
 
-async def _build_runtime_context(message: str, intent: dict) -> str:
+async def _build_runtime_context(message: str, intent: dict, page_context: dict | None = None) -> str:
     text = _normalize(message)
     sections = []
+
+    clinic_ctx = await _build_clinic_context()
+    if clinic_ctx:
+        sections.append(clinic_ctx)
+
+    page_hint = await _build_page_context_hint(page_context)
+    if page_hint:
+        sections.append(page_hint)
 
     needs_service = (
         intent.get("wantsServiceInfo")
@@ -127,6 +219,7 @@ async def run_rag_chain(
     history: list[dict],
     user_context: str = "",
     intent: dict | None = None,
+    page_context: dict | None = None,
 ) -> dict:
     if not settings.gemini_keys():
         return {
@@ -140,7 +233,7 @@ async def run_rag_chain(
         kb_context = "\n\n---\n\n".join(d["content"] for d in docs)
         sources = [d["metadata"] for d in docs[:3]]
 
-        runtime_ctx = await _build_runtime_context(query, intent or {})
+        runtime_ctx = await _build_runtime_context(query, intent or {}, page_context)
         combined_context = "\n\n".join(filter(None, [user_context, runtime_ctx]))
 
         prompt = build_prompt(query, history, kb_context, combined_context)
@@ -169,6 +262,7 @@ async def run_rag_chain_stream(
     history: list[dict],
     user_context: str = "",
     intent: dict | None = None,
+    page_context: dict | None = None,
 ) -> AsyncIterator[dict]:
     if not settings.gemini_keys():
         yield {"type": "token", "token": "Chatbot chưa được cấu hình. Vui lòng thêm GEMINI_API_KEY."}
@@ -182,7 +276,7 @@ async def run_rag_chain_stream(
         yield {"type": "sources", "sources": sources}
 
         kb_context = "\n\n---\n\n".join(d["content"] for d in docs)
-        runtime_ctx = await _build_runtime_context(query, intent or {})
+        runtime_ctx = await _build_runtime_context(query, intent or {}, page_context)
         combined_context = "\n\n".join(filter(None, [user_context, runtime_ctx]))
 
         prompt = build_prompt(query, history, kb_context, combined_context)
